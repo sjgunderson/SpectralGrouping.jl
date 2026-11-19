@@ -1,4 +1,4 @@
-using SparseArrays: sparse, issparse
+using SparseArrays: sparse, issparse, nonzeros
 using SpectralFitting: SpectralUnits, @u_str
 import SpectralFitting as SF
 using SpectralGrouping
