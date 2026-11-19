@@ -11,17 +11,30 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      JULIA_PKG_PRECOMPILE_AUTO: '0'
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.10'
       - name: Run numerical and CairoMakie tests
+        id: julia
         run: |
+          set +e
           julia --project=. -e '
             using Pkg
             Pkg.Registry.add("General")
             Pkg.Registry.add(url="https://github.com/astro-group-bristol/AstroRegistry")
             Pkg.instantiate()
             Pkg.test()
-          '
+          ' 2>&1 | tee "$RUNNER_TEMP/julia-test.log"
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            summary=$(grep -E '^ERROR:|Test Failed|Error During Test' "$RUNNER_TEMP/julia-test.log" | head -n 2 | paste -sd ' ' | cut -c1-230)
+            printf 'summary=%s\n' "${summary:-Julia exited $status}" >> "$GITHUB_OUTPUT"
+          fi
+          exit "$status"
+      - name: ${{ steps.julia.outputs.summary }}
+        if: failure() && steps.julia.outcome == 'failure'
+        run: 'true'
