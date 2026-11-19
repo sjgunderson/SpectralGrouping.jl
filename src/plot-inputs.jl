@@ -257,10 +257,15 @@ function _native_plot_inputs(input, model, extension; groupings, pooling, refere
     return (; members, reference = Int(ref), target, source, summed = false)
 end
 
-function _prepared_plot_inputs(data::AbstractGridDataset, model, extension; unfold)
+function _prepared_plot_inputs(data::AbstractGridDataset, model, extension; unfold, reference)
     source = _plot_model_flux(data.model_edges, model, extension)
     flux = isnothing(source) ? nothing : source.values
     summed = data isa SummedDataset
+    if summed && !isnothing(reference)
+        throw(ArgumentError("a summed dataset already has a reference detector grid"))
+    end
+    ref = isnothing(reference) ? 1 : reference
+    1 <= ref <= length(data.members) || throw(ArgumentError("reference must index an observation"))
     coordinate = summed ? data.coordinate : :energy
     members = [_read_plot_member(member, coordinate, flux, "$(data.name) [$i]"; unfold)
                for (i, member) in enumerate(data.members)]
@@ -268,5 +273,5 @@ function _prepared_plot_inputs(data::AbstractGridDataset, model, extension; unfo
         members = [_move_plot_member(member, data.grid, coordinate, overlap)
                    for (member, overlap) in zip(members, data.overlaps)]
     end
-    return (; members, reference = 1, target = nothing, source, summed)
+    return (; members, reference = Int(ref), target = nothing, source, summed)
 end

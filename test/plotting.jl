@@ -41,6 +41,9 @@ end
     displayed = only(plot_curves(summed; kind = :counts, xaxis = :wavelength).data)
     @test isapprox(displayed.y, summed.counts)
     @test isapprox(Matrix(displayed.covariance), Matrix(summed.covariance))
+    joint = combine_datasets(match)
+    single_bin = only(plot_curves(joint; kind = :counts, combine = :sum, reference = 2).data)
+    @test isapprox(single_bin.y, [42.0])
 
     rate = only(plot_curves(match; normalization = :rate, combine = :exposure, xaxis = :wavelength).data)
     @test isapprox(rate.y, combined.y ./ 30)
@@ -107,4 +110,11 @@ end
     fitted = plot_curves(a; kind = :unfold, model = GridTestSource(SF.FitParam(2.0)),
                          model_display = :source)
     @test isapprox(only(only(fitted.model).y), 2.0)
+
+    zero_channel = response_dataset(spectrum(1:2, [3, 2]), [1.0, 2], [2.0, 3],
+                                    [1.0], [3.0], reshape([1.0, 0.0], 2, 1))
+    diagnostics = plot_curves(zero_channel; kind = :unfold, model = GridTestSource(SF.FitParam(0.1)),
+                              rebin = 2, res = 1)
+    @test only(diagnostics.data).valid == [true, false]
+    @test all(only(diagnostics.residuals).valid)
 end

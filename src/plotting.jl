@@ -63,7 +63,7 @@ function _plot_rebin(members, factor)
     factor == 1 && return members
     base = first(members)
     grid = base.grid
-    usable = _coverage(members)
+    usable = copy(_coverage(members))
     if !isnothing(base.weights)
         usable .&= reduce(+, (member.weights for member in members)) .> 0
     end
@@ -305,7 +305,7 @@ function plot_curves(
     pooling = combine != :none || data isa SummedDataset
     inputs = if data isa AbstractGridDataset
         isnothing(groupings) || throw(ArgumentError("prepared datasets already have detector grouping; use rebin for display"))
-        _prepared_plot_inputs(data, source_model, extension; unfold = unfolding)
+        _prepared_plot_inputs(data, source_model, extension; unfold = unfolding, reference)
     elseif data isa SF.SpectralData && !isnothing(source_model) && !isnothing(fit_stat)
         _native_fit_plot_input(data, source_model, extension; groupings, unfold = unfolding)
     else
