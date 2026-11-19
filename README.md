@@ -13,7 +13,7 @@ installation.
 ```julia
 import Pkg
 Pkg.Registry.add("General")
-Pkg.Registry.add(url="https://github.com/astro-group-bristol/AstroRegistry")
+Pkg.Registry.add(Pkg.RegistrySpec(url="https://github.com/astro-group-bristol/AstroRegistry"))
 Pkg.develop(path="SpectralGrouping.jl")
 ```
 
@@ -156,6 +156,72 @@ model parameters. For a joint fit the same prediction function returns the
 packed native-bin spectra, with `joint.member_ranges` giving the slice for
 each instrument. The detector grids are available as `joint.members[i].grid`
 in keV.
+
+## Plot data, counts, fits, and unfolded flux
+
+Add CairoMakie to the Julia environment where you use SpectralGrouping.
+
+```julia
+using SpectralFitting, SpectralGrouping, CairoMakie
+
+rates = plot_data(heg; xaxis=:wavelength)
+counts = plot_counts(matched; combine=:sum, xaxis=:wavelength, rebin=2)
+fitted = plot_fit(result; xaxis=:wavelength, res=4)
+unfolded = plot_unfold(heg; xaxis=:wavelength)
+save("fit.pdf", fitted.figure)
+```
+
+`plot_data` defaults to count-rate density. Use `normalization=:rate` for
+integrated rates or `:counts` for integrated counts. `plot_counts` uses
+counts per detector bin. The default `combine=:none` shows observations
+individually. To pool them, use `:sum` or `:mean`, or use `:exposure` for
+total counts divided by total exposure. A `SummedDataset` uses its existing
+target grid. Matching uses wavelength by default, and
+`matching_coordinate=:energy` switches the overlaps to keV. The display
+axis can be `:energy`, `:wavelength`, or `:frequency`.
+
+`groupings` accepts one detector grouping plan per native observation.
+`rebin` coarsens displayed bins, while preserving detector gaps. The
+default `background=:subtract` shows on-region counts minus scaled off-region
+counts. `:include` shows the on-region spectrum and `:only` shows the
+scaled off-region background. The returned numerical curves preserve their
+bin boundaries, validity, diagonal errors, and full propagated covariance.
+Use `plot_curves(data; kind=:data)` to get those arrays without CairoMakie.
+
+`plot_fit` uses fitted parameters. You can also pass `model=source` to
+`plot_data`, `plot_counts`, or `plot_unfold`. For fit results with multiple
+datasets, choose the fit slice using `index`. The residual panel accepts
+these ISIS modes:
+
+| Mode | Per spectrum | Per displayed group |
+|---|---:|---:|
+| Standardized residual or signed square root of deviance | 1 | 4 |
+| Signed squared residual or signed deviance | 2 | 5 |
+| Data/model ratio | 3 | 6 |
+
+`residual_stat=:auto` uses the fitted statistic when supported. Use
+`:chi2`, `:cash`, or `:wstat` to select a diagnostic explicitly. A W-stat
+curve uses the off counts and source-to-background scale of each member.
+Pooled fractional Cash and W-stat curves are display diagnostics. They do
+not represent independent count likelihoods. Residuals use count-space
+values before display normalization and scaling.
+
+The result exposes `plot.axes.data` and `plot.axes.residual`. To create
+side-by-side panels, construct the axes in the desired figure and pass
+`axes=(data=top, residual=bottom)` and `figure=fig`. Each column's pair
+shares its x limits, and the lower panel carries the x-axis labels.
+
+`plot_unfold` integrates the ARF over wavelength in each RMF input bin,
+then folds the result through the RMF and scales by PHA exposure and
+AREASCAL. With no separate ARF it assumes a full response matrix that
+already includes effective area. Counts and sensitivity are pooled before
+division. The data-only path supports different ARF/RMF boundaries.
+A supplied model uses the fitting response; standalone model overlays
+require aligned ARF/RMF input bins. For `plot_unfold(result)`, the folded
+curve is the default. Use `model_display=:source` for the unsmeared source.
+`flux_unit=:ergs` switches from photons to energy flux, and both
+`plot_unfold` and `plot_counts` support ISIS-style `power` and
+`power_scale`.
 
 ## Run the checks
 
