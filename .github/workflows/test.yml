@@ -19,6 +19,11 @@ jobs:
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.10'
+      - uses: actions/cache/restore@v4
+        id: julia-cache
+        with:
+          path: ~/.julia
+          key: julia-1.10-${{ runner.os }}-${{ hashFiles('Project.toml') }}
       - name: Run numerical and CairoMakie tests
         id: julia
         run: |
@@ -32,10 +37,16 @@ jobs:
           ' 2>&1 | tee "$RUNNER_TEMP/julia-test.log"
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            summary=$(grep -E '^ERROR:|Test Failed|Error During Test' "$RUNNER_TEMP/julia-test.log" | head -n 2 | paste -sd ' ' | cut -c1-230)
+            summary=$(grep -m1 -A3 -E '^ERROR:|Test Failed|Error During Test' "$RUNNER_TEMP/julia-test.log" |
+              sed "s|${GITHUB_WORKSPACE}/||g" | paste -sd ' ' | cut -c1-245)
             printf 'summary=%s\n' "${summary:-Julia exited $status}" >> "$GITHUB_OUTPUT"
           fi
           exit "$status"
       - name: ${{ steps.julia.outputs.summary }}
         if: failure() && steps.julia.outcome == 'failure'
         run: 'true'
+      - uses: actions/cache/save@v4
+        if: always() && steps.julia-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.julia
+          key: julia-1.10-${{ runner.os }}-${{ hashFiles('Project.toml') }}

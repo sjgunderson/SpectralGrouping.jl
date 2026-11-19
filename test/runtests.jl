@@ -9,8 +9,8 @@ function spectrum(channels, counts;
                   flags = ones(Int, length(channels)), quality = zeros(Int, length(channels)),
                   errors = ones(length(channels)), statistics = SF.ErrorStatistics.Numeric)
     return SF.Spectrum{Float64}(
-        collect(channels), quality, flags, Float64.(counts), units, exposure, backscale, areascale,
-        statistics, errors, 0.0, "TEST", "TEST",
+        collect(channels), quality, flags, collect(Float64, counts), units, exposure, backscale, areascale,
+        statistics, isnothing(errors) ? nothing : collect(Float64, errors), 0.0, "TEST", "TEST",
     )
 end
 
