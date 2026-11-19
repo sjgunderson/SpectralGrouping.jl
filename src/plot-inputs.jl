@@ -134,14 +134,23 @@ function _read_plot_member(member::_MemberResponse, coordinate, flux, label; unf
                        background, model, weights, trues(length(member.grid)), false, member.exposure, label)
 end
 
+_integrated_plot_flux(edges, model) = SF.invokemodel(edges, model)
+
+function _integrated_plot_flux(edges, model::SF.AbstractSpectralModel{<:Number})
+    # A fitted model already contains numerical values instead of FitParams.
+    output = SF.allocate_model_output(model, edges)
+    SF._inner_invokemodel!(output, edges, model)
+    return view(output, :, 1)
+end
+
 function _plot_model_flux(edges, model, extension)
     isnothing(model) && return nothing
     model isa SF.AbstractSpectralModel || throw(ArgumentError("model must be a SpectralFitting source model"))
     if isnothing(extension)
-        return (; grid = BinGrid(edges), values = collect(Float64, SF.invokemodel(edges, model)))
+        return (; grid = BinGrid(edges), values = collect(Float64, _integrated_plot_flux(edges, model)))
     end
     extended = vcat(extension.low, edges, extension.high)
-    values = SF.invokemodel(extended, model)
+    values = _integrated_plot_flux(extended, model)
     first_bin = length(extension.low) + 1
     last_bin = first_bin + length(edges) - 2
     return (; grid = BinGrid(edges), values = collect(Float64, view(values, first_bin:last_bin)))
