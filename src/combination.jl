@@ -2,13 +2,16 @@ abstract type AbstractGridDataset <: SF.AbstractDataset end
 
 struct _MemberResponse
     grid::BinGrid
+    incident::BinGrid
     projection::Vector{UnitRange{Int}}
     response::SparseMatrixCSC{Float64,Int}
     counts::Vector{Float64}
     variance::Vector{Float64}
     explicit_errors::Bool
     background::Union{Nothing,Vector{Float64}}
+    background_variance::Union{Nothing,Vector{Float64}}
     alpha::Float64
+    exposure::Float64
 end
 
 """Native detector spectra packed into one SpectralFitting fit objective."""
@@ -73,26 +76,26 @@ function _effective_exposure(spectrum)
     return exposure
 end
 
-function _background_counts(data, rows, widths, source_exposure)
+function _background_observation(data, rows, widths, source_exposure)
     bkg = data.background
-    isnothing(bkg) && return nothing, 0.0
+    isnothing(bkg) && return nothing
     length(bkg.channels) == length(bkg.data) ||
         throw(DimensionMismatch("background channels and data differ in length"))
     index = _channel_index(bkg.channels, "background")
     wanted = data.spectrum.channels[rows]
     mapped = [get(index, channel, 0) for channel in wanted]
     all(>(0), mapped) || throw(ArgumentError("a selected source channel is missing from the background"))
-    counts, _ = _in_counts(bkg, mapped, widths)
+    counts, factors = _in_counts(bkg, mapped, widths)
     source_backscale = Float64(data.spectrum.background_scale)
     background_backscale = Float64(bkg.background_scale)
     all(x -> isfinite(x) && x > 0, (source_backscale, background_backscale)) ||
         throw(ArgumentError("source and background BACKSCAL must be finite and positive"))
     scale = (source_exposure / _effective_exposure(bkg)) * (source_backscale / background_backscale)
     isfinite(scale) && scale > 0 || throw(ArgumentError("invalid source-to-background scaling"))
-    return counts, scale
+    return (; counts, factors, rows = mapped, scale)
 end
 
-function _member_response(data, projection, coordinate, selected, geometry)
+function _member_response(data, incident, projection, coordinate, selected, geometry)
     rows = geometry.ascending ? selected : reverse(selected)
     grid, reversed = _detector_grid(geometry.low[rows], geometry.high[rows], coordinate)
     reversed && (rows = reverse(rows))
@@ -100,7 +103,12 @@ function _member_response(data, projection, coordinate, selected, geometry)
     counts, factors = _in_counts(data.spectrum, rows, widths)
     variance, explicit = _count_variance(data.spectrum, rows, counts, factors)
     exposure = _effective_exposure(data.spectrum)
-    background, alpha = _background_counts(data, rows, widths, exposure)
+    off = _background_observation(data, rows, widths, exposure)
+    background = isnothing(off) ? nothing : off.counts
+    background_variance = if !isnothing(off)
+        first(_count_variance(data.background, off.rows, off.counts, off.factors))
+    end
+    alpha = isnothing(off) ? 0.0 : off.scale
 
     matrix = convert(SparseMatrixCSC{Float64,Int}, data.response.matrix[geometry.response_rows[rows], :])
     area = isnothing(data.ancillary) ? nothing : data.ancillary.effective_area
@@ -112,7 +120,8 @@ function _member_response(data, projection, coordinate, selected, geometry)
         end
     end
     all(isfinite, values) || throw(ArgumentError("response entries must be finite after exposure and ARF scaling"))
-    return _MemberResponse(grid, copy(projection), matrix, counts, variance, explicit, background, alpha)
+    return _MemberResponse(grid, incident, copy(projection), matrix, counts, variance, explicit,
+                           background, background_variance, alpha, Float64(data.spectrum.exposure_time))
 end
 
 function _matched_members(match, plans, coordinate)
@@ -128,7 +137,7 @@ function _matched_members(match, plans, coordinate)
             grouped = _group_geometry(data, plan)
             selected, geometry = grouped.active_rows, grouped.geometry
         end
-        push!(members, _member_response(data, projection, coordinate, selected, geometry))
+        push!(members, _member_response(data, native, projection, coordinate, selected, geometry))
     end
     return members
 end
