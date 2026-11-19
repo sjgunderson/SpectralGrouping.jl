@@ -1,0 +1,18 @@
+name = "SpectralGrouping"
+uuid = "66eeacd0-cfbf-41b3-99a1-6742ef818586"
+version = "0.2.0"
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
+SpectralFitting = "f2c56810-742e-4b72-8bf4-27af3bb81a12"
+
+[compat]
+SpectralFitting = "0.7.3 - 0.7.4"
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

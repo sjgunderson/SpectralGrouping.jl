@@ -1,1 +1,164 @@
 # SpectralGrouping.jl
+
+Detector-channel grouping, shared model grids, and spectrum combination for
+OGIP observations loaded with SpectralFitting.jl. These are the numerical
+tools for the Julia port of fancy_plotting.
+
+## Install
+
+Extract the package, then run the following from the directory that contains
+`SpectralGrouping.jl/`. Add AstroRegistry once if it is missing from your Julia
+installation.
+
+```julia
+import Pkg
+Pkg.Registry.add("General")
+Pkg.Registry.add(url="https://github.com/astro-group-bristol/AstroRegistry")
+Pkg.develop(path="SpectralGrouping.jl")
+```
+
+The package targets Julia 1.10 or later and SpectralFitting 0.7.3 or 0.7.4.
+
+## Group a dataset
+
+Load the original PHA and apply any fit mask before grouping. Pass `background`,
+`response`, or `ancillary` to `OGIPDataset` if the file paths need overrides.
+
+```julia
+using SpectralFitting, SpectralGrouping
+
+data = OGIPDataset("source.pha")
+mask_energies!(data, 0.5, 8.0)
+
+by_counts = group_counts(data, 20)
+by_width = group_width(data, 4)
+by_snr = group_snr(data, 5.0; max_channels=30)
+by_file_flags = group_ogip(data)
+```
+
+Each command returns a new `SpectralData`. Keep the original dataset to try
+different groupings or return to native channels. Grouping by counts and S/N uses
+observed source-region counts, including any background events in that region.
+Apply those rules before background subtraction. S/N uses Poisson noise by
+default. Supply `errors=data.spectrum.errors` to `group_snr` to use independent
+errors from the spectrum.
+
+Groups stop at masked or bad-quality source channels, missing channel labels,
+and gaps in the RMF EBOUNDS. Short groups stay active in the result. The same
+groups sum the source, the background matched by channel label, and the
+detector rows of the RMF. The incident model grid and ARF retain their original
+resolution. Numeric statistical errors are added in quadrature. Poisson
+errors use SpectralFitting's count error at the summed counts.
+
+Pass the result to `FittingProblem(model => by_counts)` to fit on the grouped
+detector grid. With SpectralFitting 0.7.x, for chi-squared fits you can store
+the grouped data in the statistic's preferred units first. This also converts
+the stored one-sigma errors before SpectralFitting squares them.
+
+```julia
+set_units!(by_counts, preferred_units(by_counts, ChiSquared()))
+```
+
+## Reuse the grouping for plots
+
+Use a plan when you need the native channel slices for plotting or want to
+check which bins met the target.
+
+```julia
+plan = grouping_plan(data, :counts, 20)
+grouped = grouped_dataset(data, plan)
+short = findall(.!plan.met_target)
+lo, hi = grouped.energy_low, grouped.energy_high
+
+# folded_native_counts is a vector on the original detector channels.
+folded_grouped_counts = group_sum(plan, folded_native_counts)
+```
+
+Use the paired `energy_low` and `energy_high` arrays for plotting across detector
+gaps. `group_sum` expects integrated values in the source's original channel
+order, including rows outside the selected range.
+
+## Match and fit multiple spectra
+
+Load each observation with its response and set the detector masks first. Build
+the shared incident grid before choosing a model. The grid contains all native
+RMF input boundaries in keV. Supply `grid=` to `match_dataset_grids` to use
+a contiguous custom edge vector. It must include every native bin boundary.
+
+```julia
+using SpectralFitting, SpectralGrouping
+
+heg = OGIPDataset("heg.pha")
+meg = OGIPDataset("meg.pha")
+matched = match_dataset_grids(heg, meg; reference=1)
+
+plans = (grouping_plan(heg, :counts, 15), grouping_plan(meg, :counts, 15))
+joint = combine_datasets(matched; groupings=plans)
+source = PowerLaw()
+problem = FittingProblem(source => joint)
+stat = grid_statistic(joint)
+```
+
+This fits one source expression. Each objective evaluation evaluates it once
+and sums the integrated model bins onto each native RMF input grid. Detector
+counts are compared per spectrum after folding with its own ARF, RMF, exposure,
+and AREASCAL. The optional plans apply detector grouping independently in
+joint mode. The prepared fit captures the selection, counts, and calibration
+at the time you call `combine_datasets`. Rebuild it after changing those inputs.
+
+Pass `stat` to `fit(problem, optimizer; stat)` with a SpectralFitting-compatible
+optimizer. `grid_statistic` selects Cash deviance for raw source-only Poisson
+counts, W-stat for measured Poisson backgrounds, and `ChiSquared()` for
+supplied statistical errors on background-free data. The W-stat uses the
+attached off counts and the source-to-background exposure, BACKSCAL, and
+AREASCAL ratios for each member. Supply raw source and background spectra
+for W-stat. If you already used SpectralFitting's `subtract_background!`,
+set `data.spectrum.error_statistics = SpectralFitting.ErrorStatistics.Numeric`
+before preparing a joint chi-squared fit so it uses the propagated errors.
+For least squares, use SpectralFitting's `LevenbergMarquadt()`.
+
+For example, with `OptimizationOptimJL` installed in your project:
+
+```julia
+using OptimizationOptimJL: NelderMead
+
+result = fit(problem, NelderMead(); stat)
+```
+
+## Sum spectra on a reference detector grid
+
+```julia
+combined = combine_datasets(matched; mode=:sum, groupings=plans)
+summed_problem = FittingProblem(source => combined)
+summed_stat = grid_statistic(combined)
+```
+
+Sum mode takes background-free raw counts. It uses the reference member's
+selected or grouped bins in wavelength (Å) by default. Counts and folded model
+predictions are mapped from the original selected channels before reference
+grouping, using bin-overlap fractions in wavelength. Use `coordinate=:energy`
+for keV overlaps, or provide a custom output `grid=BinGrid(low, high)` in the
+chosen detector coordinate. The output grid may crop coverage. Gaps and
+separate bin boundaries are available on `combined.grid`.
+
+Fractional overlap produces correlated counts. `combined.covariance` stores
+the full sparse covariance, and chi-squared fitting whitens both data and
+model with that covariance. A singular covariance requires a coarser
+detector grid or a joint fit. For exact sums of Poisson counts,
+`grid_statistic` selects Cash deviance. A fit using explicit statistical
+errors uses their propagated variances.
+
+For counts-space output, use `combined.counts` and
+`predict_counts(combined, incident_flux)`, where `incident_flux` contains
+bin-integrated model values on `combined.model_edges`. For example,
+`incident_flux = invokemodel(combined.model_edges, source)` uses the current
+model parameters. For a joint fit the same prediction function returns the
+packed native-bin spectra, with `joint.member_ranges` giving the slice for
+each instrument. The detector grids are available as `joint.members[i].grid`
+in keV.
+
+## Run the checks
+
+```sh
+julia --project=SpectralGrouping.jl -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
+```
