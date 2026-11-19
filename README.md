@@ -13,7 +13,7 @@ installation.
 ```julia
 import Pkg
 Pkg.Registry.add("General")
-Pkg.Registry.add(url="https://github.com/astro-group-bristol/AstroRegistry")
+Pkg.Registry.add(Pkg.RegistrySpec(url="https://github.com/astro-group-bristol/AstroRegistry"))
 Pkg.develop(path="SpectralGrouping.jl")
 ```
 

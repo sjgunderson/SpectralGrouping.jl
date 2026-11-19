@@ -116,7 +116,10 @@ function SG._render_plot(
     model_artists = [_draw_curve!(top, curve, observation_colors[i]; width = linewidth,
                                   marker = 0, errors = false, model = true)
                      for (i, curve) in enumerate(plot.model)]
-    residual_artists = [_draw_curve!(lower, curve, observation_colors[mod1(i, length(observation_colors))];
+    residual_colors = length(plot.residuals) <= length(observation_colors) ? observation_colors :
+        [isnothing(color) ? SPECTRUM_COLORS[mod1(i, length(SPECTRUM_COLORS))] : color
+         for i in eachindex(plot.residuals)]
+    residual_artists = [_draw_curve!(lower, curve, residual_colors[i];
                                      width = linewidth, marker = markersize, errors = errorbars)
                         for (i, curve) in enumerate(plot.residuals)]
     legend && any(artists -> !isempty(artists), data_artists) && Makie.axislegend(top)

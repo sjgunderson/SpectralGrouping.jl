@@ -76,7 +76,7 @@ function _effective_exposure(spectrum)
     return exposure
 end
 
-function _background_observation(data, rows, widths, source_exposure)
+function _background_observation(data, rows, widths, source_exposure; allow_zero = false)
     bkg = data.background
     isnothing(bkg) && return nothing
     length(bkg.channels) == length(bkg.data) ||
@@ -91,7 +91,8 @@ function _background_observation(data, rows, widths, source_exposure)
     all(x -> isfinite(x) && x > 0, (source_backscale, background_backscale)) ||
         throw(ArgumentError("source and background BACKSCAL must be finite and positive"))
     scale = (source_exposure / _effective_exposure(bkg)) * (source_backscale / background_backscale)
-    isfinite(scale) && scale > 0 || throw(ArgumentError("invalid source-to-background scaling"))
+    isfinite(scale) && (scale > 0 || allow_zero && iszero(scale)) ||
+        throw(ArgumentError("invalid source-to-background scaling"))
     return (; counts, factors, rows = mapped, scale)
 end
 

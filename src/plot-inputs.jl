@@ -110,7 +110,11 @@ function _read_plot_member(data, rows, geometry; unfold, read_background, model 
     counts, factors = _in_counts(data.spectrum, rows, grid.high .- grid.low)
     variance, _ = _count_variance(data.spectrum, rows, counts, factors)
     background = if read_background && !isnothing(data.background)
-        off = _background_observation(data, rows, grid.high .- grid.low, _effective_exposure(data.spectrum))
+        exposure, area = data.spectrum.exposure_time, data.spectrum.area_scale
+        isfinite(exposure) && exposure > 0 && isfinite(area) && area >= 0 ||
+            throw(ArgumentError("background scaling requires positive exposure and nonnegative AREASCAL"))
+        off = _background_observation(data, rows, grid.high .- grid.low,
+                                      Float64(exposure) * Float64(area); allow_zero = true)
         var, _ = _count_variance(data.background, off.rows, off.counts, off.factors)
         _PlotBackground(off.counts, spdiagm(0 => var), off.scale)
     end
