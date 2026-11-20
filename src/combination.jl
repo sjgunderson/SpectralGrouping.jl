@@ -261,8 +261,9 @@ end
 
 SF.supports(::Type{<:AbstractGridDataset}) = (SF.ContiguouslyBinned(),)
 SF.make_label(data::AbstractGridDataset) = data.name
+# SpectralFitting's text/plain display expects a newline in this summary.
 SF._printinfo(io::IO, data::AbstractGridDataset) =
-    print(io, data.name, " with ", length(data.counts), " bins from ", length(data.members), " datasets")
+    println(io, data.name, " with ", length(data.counts), " bins from ", length(data.members), " datasets")
 SF.make_model_domain(::SF.ContiguouslyBinned, data::AbstractGridDataset) = copy(data.model_edges)
 SF.make_output_domain(::SF.ContiguouslyBinned, data::AbstractGridDataset) = collect(0.0:length(data.counts))
 
