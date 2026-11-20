@@ -128,6 +128,8 @@ end
     @test length(combined.members[2].counts) == 3
     joint = combine_datasets(match; groupings = plans)
     @test joint.counts == [3, 7, 15, 12]
+    @test occursin("combined with 4 bins from 2 datasets", repr(MIME"text/plain"(), joint))
+    @test occursin("combined with 2 bins from 2 datasets", repr(MIME"text/plain"(), combined))
 
     rebin = overlap_projection(BinGrid([1.0, 3], [2.0, 4]), BinGrid([1.0, 4]))
     @test rebin * [2.0, 3.0] == [5]
