@@ -226,19 +226,39 @@ function combine_datasets(
     throw(ArgumentError("mode must be :joint or :sum"))
 end
 
-_native_flux(member, flux) = [sum(view(flux, bin)) for bin in member.projection]
+_native_flux(member, flux) = _native_flux(member, flux, nothing)
+_native_flux(member, flux, ::Nothing) = [sum(view(flux, bin)) for bin in member.projection]
 
-function _fold_counts!(output, data::JointDataset, flux)
-    for (member, range) in zip(data.members, data.member_ranges)
-        mul!(view(output, range), member.response, _native_flux(member, flux))
+function _native_flux(member, flux, cache)
+    output = SF.get_tmp(cache, flux)
+    for (i, bin) in enumerate(member.projection)
+        output[i] = sum(view(flux, bin))
     end
     return output
 end
 
-function _fold_counts!(output, data::SummedDataset, flux)
+function _native_counts(member, flux, ::Nothing)
+    return member.response * _native_flux(member, flux, nothing)
+end
+
+function _native_counts(member, flux, cache)
+    return mul!(SF.get_tmp(cache.counts, flux), member.response,
+        _native_flux(member, flux, cache.flux))
+end
+
+function _fold_counts!(output, data::JointDataset, flux, caches = nothing)
+    for (i, (member, range)) in enumerate(zip(data.members, data.member_ranges))
+        cache = isnothing(caches) ? nothing : caches[i]
+        mul!(view(output, range), member.response, _native_flux(member, flux, cache))
+    end
+    return output
+end
+
+function _fold_counts!(output, data::SummedDataset, flux, caches = nothing)
     fill!(output, zero(eltype(output)))
-    for (member, overlap) in zip(data.members, data.overlaps)
-        native = member.response * _native_flux(member, flux)
+    for (i, (member, overlap)) in enumerate(zip(data.members, data.overlaps))
+        cache = isnothing(caches) ? nothing : caches[i]
+        native = _native_counts(member, flux, cache)
         mul!(output, overlap, native, 1, 1)
     end
     return output
@@ -276,10 +296,17 @@ end
 SF.make_objective_variance(layout::SF.ContiguouslyBinned, data::AbstractGridDataset) =
     _whitened(layout) ? ones(length(data.counts)) : data.variance
 
+_projection_cache(member) = SF.DiffCache(zeros(length(member.projection)))
+_response_caches(data::JointDataset) = map(_projection_cache, data.members)
+_response_caches(data::SummedDataset) = map(data.members) do member
+    (flux = _projection_cache(member), counts = SF.DiffCache(zeros(length(member.counts))))
+end
+
 function SF.objective_transformer(layout::SF.ContiguouslyBinned, data::AbstractGridDataset)
+    caches = _response_caches(data)
     function fold!(output, domain, flux)
         domain == data.model_edges || throw(ArgumentError("incident model grid differs from the matched grid"))
-        counts = _fold_counts!(vec(output), data, vec(flux))
+        counts = _fold_counts!(vec(output), data, vec(flux), caches)
         _whitened(layout) && ldiv!(data.whitener, counts)
         return output
     end
