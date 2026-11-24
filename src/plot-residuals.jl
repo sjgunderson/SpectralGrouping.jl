@@ -1,5 +1,6 @@
 function _plot_statistic(requested, fitted)
     if requested == :auto
+        fitted isa _JointWStat && return :wstat
         if fitted isa _GridPoisson
             return isnothing(fitted.background) ? :cash : :wstat
         end

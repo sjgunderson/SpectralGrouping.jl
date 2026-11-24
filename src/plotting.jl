@@ -25,7 +25,25 @@ const KEV_TO_ERG = 1.602176634e-9
 
 _widths(grid::BinGrid) = grid.high .- grid.low
 _plot_label(members) = join((member.label for member in members), " + ")
-_coverage(members) = reduce((a, b) -> a .| b, (member.covered for member in members))
+function _display_coverage(members, background)
+    covered = falses(length(first(members).grid))
+    for member in members
+        if background != :only || !isnothing(member.background)
+            covered .|= member.covered
+        end
+    end
+    return covered
+end
+
+function _display_weights(members, background)
+    weights = zeros(length(first(members).grid))
+    for member in members
+        if background != :only || !isnothing(member.background)
+            weights .+= member.weights
+        end
+    end
+    return weights
+end
 
 function _power_weights(grid, power, power_scale)
     power == 1 && return ones(length(grid))
@@ -59,13 +77,13 @@ function _plot_align(members, grid, coordinate)
     end
 end
 
-function _plot_rebin(members, factor)
+function _plot_rebin(members, factor, background)
     factor == 1 && return members
     base = first(members)
     grid = base.grid
-    usable = copy(_coverage(members))
+    usable = _display_coverage(members, background)
     if !isnothing(base.weights)
-        usable .&= reduce(+, (member.weights for member in members)) .> 0
+        usable .&= _display_weights(members, background) .> 0
     end
 
     starts, stops, destinations = Int[], Int[], Int[]
@@ -148,7 +166,7 @@ function _display_run(members, opts)
     base = first(members)
     grid, order = _convert_plot_grid(base.grid, base.coordinate, opts.xaxis)
     n = length(grid)
-    covered = _coverage(members)[order]
+    covered = _display_coverage(members, opts.background)[order]
     unfolding = opts.kind == :unfold
     coefficients = unfolding ? ones(length(members)) :
         _plot_coefficients(members, opts.normalization, opts.combine)
@@ -167,9 +185,11 @@ function _display_run(members, opts)
     multiplication = if unfolding
         wavelength, wave_order = _convert_plot_grid(base.grid, base.coordinate, :wavelength)
         wavelength_width = _widths(wavelength)[invperm(wave_order)][order]
-        weights = reduce(+, (member.weights for member in members))[order]
+        weights = _display_weights(members, opts.background)[order]
         valid = covered .& isfinite.(weights) .& (weights .> 0)
-        any(valid) || throw(ArgumentError("the selected bins have no finite positive response sensitivity"))
+        if opts.combine == :none && !any(valid)
+            throw(ArgumentError("the selected bins have no finite positive response sensitivity"))
+        end
         multiplier = _flux_multiplier(grid, opts.xaxis, opts.flux_unit, opts.power, opts.power_scale)
         wavelength_width .* multiplier ./ _widths(grid) ./ ifelse.(valid, weights, 1.0)
     else
@@ -305,9 +325,9 @@ function plot_curves(
     pooling = combine != :none || data isa SummedDataset
     inputs = if data isa AbstractGridDataset
         isnothing(groupings) || throw(ArgumentError("prepared datasets already have detector grouping; use rebin for display"))
-        _prepared_plot_inputs(data, source_model, extension; unfold = unfolding, reference)
+        _prepared_plot_inputs(data, source_model, extension; unfold = unfolding, pooling, reference)
     elseif data isa SF.SpectralData && !isnothing(source_model) && !isnothing(fit_stat)
-        _native_fit_plot_input(data, source_model, extension; groupings, unfold = unfolding)
+        _native_fit_plot_input(data, source_model, extension; groupings, pooling, reference, unfold = unfolding)
     else
         _native_plot_inputs(data, source_model, extension; groupings, pooling, reference,
                             unfold = unfolding, read_background = background != :include)
@@ -320,13 +340,12 @@ function plot_curves(
                 combine = normalization == :counts || unfolding ? :sum : :exposure
             end
         else
-            reference_grid = isnothing(inputs.target) ? members[inputs.reference].grid : inputs.target
-            grid, _ = _convert_plot_grid(reference_grid, :energy, matching_coordinate)
+            grid, _ = _convert_plot_grid(inputs.target, :energy, matching_coordinate)
             members = _plot_align(members, grid, matching_coordinate)
         end
-        [_plot_rebin(members, rebin)]
+        [_plot_rebin(members, rebin, background)]
     else
-        [_plot_rebin([member], rebin) for member in members]
+        [_plot_rebin([member], rebin, background) for member in members]
     end
 
     opts = (; kind, xaxis, normalization, combine, background, show_model, flux_unit,

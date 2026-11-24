@@ -80,6 +80,9 @@ order, including rows outside the selected range.
 
 ## Match and fit multiple spectra
 
+For simultaneous W-stat fits with more than one incident grid, see the
+[multi-grid W-stat guide](docs/multi-grid-wstat.md).
+
 Load each observation with its response and set the detector masks first. Build
 the shared incident grid before choosing a model. The grid contains all native
 RMF input boundaries in keV. Supply `grid=` to `match_dataset_grids` to use
@@ -159,6 +162,9 @@ in keV.
 
 ## Plot data, counts, fits, and unfolded flux
 
+The [plotting guide](docs/plotting.md) includes runnable synthetic examples
+for HETG overlays, RGS detector gaps, and multi-panel figures.
+
 Add CairoMakie to the Julia environment where you use SpectralGrouping.
 
 ```julia
@@ -176,7 +182,10 @@ integrated rates or `:counts` for integrated counts. `plot_counts` uses
 counts per detector bin. The default `combine=:none` shows observations
 individually. To pool them, use `:sum` or `:mean`, or use `:exposure` for
 total counts divided by total exposure. A `SummedDataset` uses its existing
-target grid. Matching uses wavelength by default, and
+target grid. Other pooled plots use the reference observation's original RMF
+detector grid and gather eligible contributions from every observation.
+Exposure normalization uses the total observation exposure across gaps.
+Matching uses wavelength by default, and
 `matching_coordinate=:energy` switches the overlaps to keV. The display
 axis can be `:energy`, `:wavelength`, or `:frequency`.
 

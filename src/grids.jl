@@ -64,21 +64,52 @@ function _incident_grid(data::SF.SpectralData)
     return grid
 end
 
-"""Model-independent incident grid geometry for a collection of datasets."""
+function _detector_energy_grid(low, high)
+    length(low) == length(high) || throw(DimensionMismatch("detector boundary arrays differ in length"))
+    lo = collect(Float64, low)
+    for i in 2:length(lo)
+        # FITS bounds can differ by roundoff at a nominally shared edge.
+        if high[i - 1] > lo[i] && _roundtrip_edge(high[i - 1], lo[i])
+            lo[i] = high[i - 1]
+        end
+    end
+    return BinGrid(lo, high)
+end
+
+function _original_detector_grid(data::SF.SpectralData)
+    response = data.response
+    low, high = response.channel_bins_low, response.channel_bins_high
+    length(low) == length(high) == size(response.matrix, 1) == length(response.channels) ||
+        throw(DimensionMismatch("response channel arrays differ in length"))
+    allunique(response.channels) || throw(ArgumentError("duplicate response channel labels"))
+    order = sortperm(low)
+    return _detector_energy_grid(low[order], high[order])
+end
+
+"""Matched incident grids and original RMF detector grids, all in keV."""
 struct GridMatch{D<:Tuple}
     datasets::D
     model_edges::Vector{Float64}
     native_grids::Vector{BinGrid}
     projections::Vector{Vector{UnitRange{Int}}}
     reference::Int
+    detector_grids::Vector{BinGrid}
 end
+
+function GridMatch{D}(datasets, model_edges, native_grids, projections, reference) where {D<:Tuple}
+    return GridMatch{D}(datasets, model_edges, native_grids, projections, reference,
+                        BinGrid[_original_detector_grid(data) for data in datasets])
+end
+
+GridMatch(datasets::D, model_edges, native_grids, projections, reference) where {D<:Tuple} =
+    GridMatch{D}(datasets, model_edges, native_grids, projections, reference)
 
 """
     match_dataset_grids(datasets; grid=nothing, reference=1)
 
 Build a common incident model grid in keV. By default it contains every native
 RMF input edge. A supplied contiguous grid must include all these boundaries.
-`reference` indexes the member that supplies the default summed detector grid.
+`reference` indexes the member that supplies the default detector target.
 """
 function match_dataset_grids(datasets::Union{Tuple, AbstractVector}; grid = nothing, reference::Integer = 1)
     members = Tuple(datasets)
@@ -139,9 +170,10 @@ function overlap_projection(source::BinGrid, target::BinGrid)
 end
 
 function _detector_grid(low, high, coordinate)
+    energy = _detector_energy_grid(low, high)
     if coordinate == :energy
-        return BinGrid(low, high), false
+        return energy, false
     end
-    all(>(0), low) || throw(ArgumentError("wavelength matching requires positive EBOUNDS; use coordinate=:energy"))
-    return BinGrid(reverse(HC_KEV_ANGSTROM ./ high), reverse(HC_KEV_ANGSTROM ./ low)), true
+    all(>(0), energy.low) || throw(ArgumentError("wavelength matching requires positive EBOUNDS; use coordinate=:energy"))
+    return BinGrid(reverse(HC_KEV_ANGSTROM ./ energy.high), reverse(HC_KEV_ANGSTROM ./ energy.low)), true
 end
