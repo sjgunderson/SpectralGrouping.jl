@@ -113,4 +113,5 @@ end
 
 include("grid-matching.jl")
 include("plotting.jl")
+include("detector-display.jl")
 include("plot-rendering.jl")

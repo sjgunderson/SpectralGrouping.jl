@@ -22,7 +22,13 @@ struct JointDataset <: AbstractGridDataset
     counts::Vector{Float64}
     variance::Vector{Float64}
     name::String
+    detector_grids::Vector{BinGrid}
+    reference::Int
 end
+
+JointDataset(model_edges, members, member_ranges, counts, variance, name) =
+    JointDataset(model_edges, members, member_ranges, counts, variance, name,
+                 BinGrid[member.grid for member in members], 1)
 
 """Detector-bin sum with its overlap projections and full count covariance."""
 struct SummedDataset <: AbstractGridDataset
@@ -147,13 +153,15 @@ function _joint_dataset(match, plans, name)
     datasets = map(match.datasets, plans) do data, plan
         isnothing(plan) ? data : grouped_dataset(data, plan)
     end
-    grouped_match = GridMatch(datasets, match.model_edges, match.native_grids, match.projections, match.reference)
+    grouped_match = GridMatch(datasets, match.model_edges, match.native_grids, match.projections,
+                              match.reference, match.detector_grids)
     members = _matched_members(grouped_match, ntuple(_ -> nothing, length(plans)), :energy)
     offsets = cumsum(vcat(0, [length(member.counts) for member in members]))
     ranges = [(offsets[i] + 1):offsets[i + 1] for i in eachindex(members)]
     counts = reduce(vcat, (member.counts for member in members))
     variance = reduce(vcat, (member.variance for member in members))
-    return JointDataset(copy(match.model_edges), members, ranges, counts, variance, name)
+    return JointDataset(copy(match.model_edges), members, ranges, counts, variance, name,
+                        map(_bin_grid, match.detector_grids), match.reference)
 end
 
 _raw_counts(values) = all(x -> x >= 0 && abs(x - round(x)) <= EDGE_RTOL * max(1.0, abs(x)), values)

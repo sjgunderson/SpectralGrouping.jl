@@ -106,7 +106,7 @@ end
 
 function _read_plot_member(data, rows, geometry; unfold, read_background, model = nothing)
     rows = geometry.ascending ? rows : reverse(rows)
-    grid = BinGrid(geometry.low[rows], geometry.high[rows])
+    grid = _detector_energy_grid(geometry.low[rows], geometry.high[rows])
     counts, factors = _in_counts(data.spectrum, rows, grid.high .- grid.low)
     variance, _ = _count_variance(data.spectrum, rows, counts, factors)
     background = if read_background && !isnothing(data.background)
@@ -122,6 +122,14 @@ function _read_plot_member(data, rows, geometry; unfold, read_background, model 
     label = string(SF.make_label(data))
     return _PlotMember(grid, :energy, counts, spdiagm(0 => variance), background, model,
                        weights, trues(length(grid)), false, Float64(data.spectrum.exposure_time), label)
+end
+
+function _empty_plot_member(data, target; unfold, has_model)
+    n = length(target)
+    label = string(SF.make_label(data))
+    return _PlotMember(target, :energy, zeros(n), spzeros(n, n), nothing,
+                       has_model ? zeros(n) : nothing, unfold ? zeros(n) : nothing,
+                       falses(n), false, Float64(data.spectrum.exposure_time), label)
 end
 
 function _read_plot_member(member::_MemberResponse, coordinate, flux, label; unfold)
@@ -187,28 +195,60 @@ function _plot_plans(groupings, n)
     return plans
 end
 
-function _native_fit_plot_input(data, model, extension; groupings, unfold)
+function _coarsen_plot_grid(original, spans)
+    low, high = Float64[], Float64[]
+    i, group = 1, 1
+    while i <= length(original)
+        stop = i
+        while group <= length(spans) && spans.low[group] < original.low[i] &&
+                !_roundtrip_edge(spans.low[group], original.low[i])
+            group += 1
+        end
+        if group <= length(spans) && _roundtrip_edge(spans.low[group], original.low[i])
+            endpoint = spans.high[group]
+            while stop < length(original) && original.high[stop] < endpoint &&
+                    !_roundtrip_edge(original.high[stop], endpoint) &&
+                    _roundtrip_edge(original.high[stop], original.low[stop + 1])
+                stop += 1
+            end
+            _roundtrip_edge(original.high[stop], endpoint) || (stop = i)
+            group += 1
+        end
+        push!(low, original.low[i])
+        push!(high, original.high[stop])
+        i = stop + 1
+    end
+    return BinGrid(low, high)
+end
+
+function _native_fit_plot_input(data, model, extension; groupings, pooling, reference, unfold)
+    isnothing(reference) || reference == 1 || throw(ArgumentError("reference must index an observation"))
     plan = only(_plot_plans(groupings, 1))
-    target = nothing
+    target = pooling ? _original_detector_grid(data) : nothing
     if isnothing(plan)
         rows = _selected_rows(data, nothing)
-        geometry = _geometry(data, rows)
     else
         grouped = _group_geometry(data, plan)
-        rows, geometry = grouped.active_rows, grouped.geometry
-        target = BinGrid(grouped.low, grouped.high)
+        rows = grouped.active_rows
+        spans = _detector_energy_grid(grouped.low, grouped.high)
+        target = pooling ? _coarsen_plot_grid(target, spans) : spans
     end
     source = _plot_model_flux(data.domain, model, extension)
+    if pooling && isempty(rows)
+        member = _empty_plot_member(data, target; unfold, has_model = true)
+        return (; members = [member], target, source, summed = false)
+    end
+    geometry = _geometry(data, rows)
     fold = SF.objective_transformer(SF.ContiguouslyBinned(u"counts"), data)
     folded = vec(fold(data.domain, copy(source.values)))
     fit_rows = findall(data.data_mask)
     ordered_rows = geometry.ascending ? rows : reverse(rows)
     counts = collect(Float64, folded[searchsortedfirst.(Ref(fit_rows), ordered_rows)])
     member = _read_plot_member(data, rows, geometry; unfold, read_background = true, model = counts)
-    if !isnothing(target)
+    if !pooling && !isnothing(target)
         member = _move_plot_member(member, target, :energy, overlap_projection(member.grid, target))
     end
-    return (; members = [member], reference = 1, target = nothing, source, summed = false)
+    return (; members = [member], target, source, summed = false)
 end
 
 function _native_plot_inputs(input, model, extension; groupings, pooling, reference, unfold, read_background)
@@ -241,17 +281,23 @@ function _native_plot_inputs(input, model, extension; groupings, pooling, refere
     end
     source = has_model ? _plot_model_flux(match.model_edges, model, extension) : nothing
     members = _PlotMember[]
-    target = nothing
+    target = if pooling
+        input isa GridMatch ? input.detector_grids[ref] : _original_detector_grid(datasets[ref])
+    end
     for i in eachindex(shown)
         data, plan = shown[i], raw_plans[i]
         if isnothing(plan)
             rows = _selected_rows(data, nothing)
+            if pooling && isempty(rows)
+                push!(members, _empty_plot_member(data, target; unfold, has_model))
+                continue
+            end
             geometry = _geometry(data, rows)
         else
             grouped = _group_geometry(data, plan)
             rows, geometry = grouped.active_rows, grouped.geometry
             if i == ref
-                target = BinGrid(grouped.low, grouped.high)
+                target = _coarsen_plot_grid(target, _detector_energy_grid(grouped.low, grouped.high))
             end
         end
         label = string(SF.make_label(data))
@@ -263,18 +309,21 @@ function _native_plot_inputs(input, model, extension; groupings, pooling, refere
         end
         push!(members, member)
     end
-    return (; members, reference = Int(ref), target, source, summed = false)
+    return (; members, target, source, summed = false)
 end
 
-function _prepared_plot_inputs(data::AbstractGridDataset, model, extension; unfold, reference)
+function _prepared_plot_inputs(data::AbstractGridDataset, model, extension; unfold, pooling, reference)
     source = _plot_model_flux(data.model_edges, model, extension)
     flux = isnothing(source) ? nothing : source.values
     summed = data isa SummedDataset
     if summed && !isnothing(reference)
         throw(ArgumentError("a summed dataset already has a reference detector grid"))
     end
-    ref = isnothing(reference) ? 1 : reference
-    1 <= ref <= length(data.members) || throw(ArgumentError("reference must index an observation"))
+    target = if !summed
+        ref = isnothing(reference) ? data.reference : reference
+        1 <= ref <= length(data.members) || throw(ArgumentError("reference must index an observation"))
+        pooling ? _coarsen_plot_grid(data.detector_grids[ref], data.members[ref].grid) : nothing
+    end
     coordinate = summed ? data.coordinate : :energy
     members = [_read_plot_member(member, coordinate, flux, "$(data.name) [$i]"; unfold)
                for (i, member) in enumerate(data.members)]
@@ -282,5 +331,5 @@ function _prepared_plot_inputs(data::AbstractGridDataset, model, extension; unfo
         members = [_move_plot_member(member, data.grid, coordinate, overlap)
                    for (member, overlap) in zip(members, data.overlaps)]
     end
-    return (; members, reference = Int(ref), target = nothing, source, summed)
+    return (; members, target, source, summed)
 end
