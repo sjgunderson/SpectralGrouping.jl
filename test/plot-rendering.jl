@@ -29,6 +29,34 @@ using CairoMakie: Axis, Figure, save
     end
 end
 
+@testset "Log scales on axes supplied by the caller" begin
+    pn = dataset(spectrum(1:5, [11, 2, 3, 18, 30]); low = collect(0.0:4.0),
+                 background = spectrum(1:5, [1, 2, 4, 3, 2]))
+    mos = dataset(spectrum(1:3, [8, 13, 18]))
+    fig = Figure()
+    top = Axis(fig[1, 1]; limits = (nothing, (0.0, 10.0)))
+    residual = Axis(fig[2, 1])
+    axes = (; data = top, residual)
+    source = GridTestSource(SF.FitParam(0.1))
+    p = plot_data(pn; figure = fig, axes, model = source, res = 1, xscale = :log, yscale = :log)
+    @test p.axes.data === top
+    @test top.xscale[] === top.yscale[] === residual.xscale[] === log10
+    @test residual.yscale[] === identity
+    @test all(>(0), minimum(top.targetlimits[]))
+    @test top.limits[] == (nothing, (nothing, 10.0))
+    @test length(last(only(p.artists.data)).val_low_high[]) == 2
+    overlay = plot_data(mos; figure = fig, axes = p.axes, xscale = :log, yscale = :log)
+    @test overlay.axes.data === top
+
+    blank_fig = Figure()
+    blank_axis = Axis(blank_fig[1, 1])
+    blank = plot_counts(dataset(spectrum(1:2, [0, -1])); axes = (data = blank_axis,),
+                        xscale = :log, yscale = :log)
+    @test isempty(only(blank.artists.data))
+    @test blank_axis.limits[] == (nothing, nothing)
+    @test all(>(0), minimum(blank_axis.targetlimits[]))
+end
+
 @testset "CairoMakie shared-width RGS plot" begin
     rgs1, rgs2, _ = rgs_width_pair()
     matched = match_dataset_grids(rgs1, rgs2)
