@@ -4,7 +4,15 @@ struct _PlotBackground
     alpha::Float64
 end
 
-struct _PlotMember
+"""
+One observation on a detector grid. `counts` and `covariance` describe the
+on-region measurement. For `background`, multiply its off-region `counts` by
+`alpha` and its `covariance` by `alpha^2` to obtain source-region equivalents.
+`model` holds folded source counts, and `weights` hold response sensitivity
+when requested. `coverage` is the fraction of each bin's geometric width
+covered by this observation's selected channels in `coordinate`.
+"""
+struct AlignedDetectorSpectrum
     grid::BinGrid
     coordinate::Symbol
     counts::Vector{Float64}
@@ -12,10 +20,22 @@ struct _PlotMember
     background::Union{Nothing,_PlotBackground}
     model::Union{Nothing,Vector{Float64}}
     weights::Union{Nothing,Vector{Float64}}
-    covered::BitVector
+    coverage::Vector{Float64}
     fractional::Bool
     exposure::Float64
     label::String
+end
+
+"""
+Aligned detector spectra in input order, with a common `grid` and
+`coordinate`. `channels_per_bin` records how many original target bins each
+output bin contains. Measurements are available separately in `members`.
+"""
+struct DetectorAlignment
+    grid::BinGrid
+    coordinate::Symbol
+    members::Vector{AlignedDetectorSpectrum}
+    channels_per_bin::Vector{Int}
 end
 
 const HZ_PER_KEV = 2.417989242084918e17
@@ -34,10 +54,36 @@ function _convert_plot_grid(grid::BinGrid, from, to)
     if to == :frequency
         return BinGrid(energy.low .* HZ_PER_KEV, energy.high .* HZ_PER_KEV), order
     elseif to == :wavelength
+        iszero(first(energy.low)) &&
+            throw(ArgumentError("a zero-energy edge has no finite wavelength; use energy or a positive-energy detector grid"))
         wavelength, _ = _detector_grid(energy.low, energy.high, :wavelength)
         return wavelength, reverse!(order)
     end
     return energy, order
+end
+
+function _detector_target(data::Union{GridMatch,JointDataset}, reference)
+    if isnothing(reference)
+        return (grid = data.detector_target, coordinate = data.detector_coordinate)
+    end
+    1 <= reference <= length(data.detector_grids) ||
+        throw(ArgumentError("reference must index an observation"))
+    return (grid = data.detector_grids[reference], coordinate = :energy)
+end
+
+"""
+    detector_grid(match; coordinate=nothing, reference=nothing)
+
+Return a copy of the ungrouped detector target in its stored coordinate
+(keV for the default reference) or convert it to `:energy` (keV),
+`:wavelength` (Å), or `:frequency` (Hz). An explicit `reference` selects that
+observation's original RMF detector grid. Also accepts a prepared `JointDataset`.
+"""
+function detector_grid(data::Union{GridMatch,JointDataset}; coordinate = nothing, reference = nothing)
+    target = _detector_target(data, reference)
+    units = isnothing(coordinate) ? target.coordinate : coordinate
+    units in (:energy, :wavelength, :frequency) || throw(ArgumentError("unknown detector coordinate"))
+    return _bin_grid(first(_convert_plot_grid(target.grid, target.coordinate, units)))
 end
 
 function _move_plot_member(member, grid, coordinate, transform)
@@ -50,10 +96,11 @@ function _move_plot_member(member, grid, coordinate, transform)
     weights = isnothing(member.weights) ? nothing : transform * member.weights
     counts = transform * member.counts
     covariance = transform * member.covariance * transpose(transform)
-    covered = BitVector(transform * Float64.(member.covered) .> 0)
+    covered_width = transform * (member.coverage .* _widths(member.grid))
+    coverage = clamp.(covered_width ./ _widths(grid), 0.0, 1.0)
     fractional = member.fractional || any(!=(1.0), nonzeros(transform))
-    return _PlotMember(grid, coordinate, counts, covariance, background, model, weights,
-                       covered, fractional, member.exposure, member.label)
+    return AlignedDetectorSpectrum(grid, coordinate, counts, covariance, background, model, weights,
+                                   coverage, fractional, member.exposure, member.label)
 end
 
 function _orient_plot_member(member, coordinate)
@@ -65,9 +112,9 @@ function _orient_plot_member(member, coordinate)
     end
     model = isnothing(member.model) ? nothing : member.model[order]
     weights = isnothing(member.weights) ? nothing : member.weights[order]
-    return _PlotMember(grid, coordinate, member.counts[order], member.covariance[order, order],
-                       background, model, weights, member.covered[order], member.fractional,
-                       member.exposure, member.label)
+    return AlignedDetectorSpectrum(grid, coordinate, member.counts[order], member.covariance[order, order],
+                                   background, model, weights, member.coverage[order], member.fractional,
+                                   member.exposure, member.label)
 end
 
 function _wavelength_widths(energy::BinGrid)
@@ -120,16 +167,16 @@ function _read_plot_member(data, rows, geometry; unfold, read_background, model 
     end
     weights = unfold ? _unfold_weights(data, geometry.response_rows[rows]) : nothing
     label = string(SF.make_label(data))
-    return _PlotMember(grid, :energy, counts, spdiagm(0 => variance), background, model,
-                       weights, trues(length(grid)), false, Float64(data.spectrum.exposure_time), label)
+    return AlignedDetectorSpectrum(grid, :energy, counts, spdiagm(0 => variance), background, model,
+                                   weights, ones(length(grid)), false, Float64(data.spectrum.exposure_time), label)
 end
 
 function _empty_plot_member(data, target; unfold, has_model)
-    n = length(target)
+    n = length(target.grid)
     label = string(SF.make_label(data))
-    return _PlotMember(target, :energy, zeros(n), spzeros(n, n), nothing,
-                       has_model ? zeros(n) : nothing, unfold ? zeros(n) : nothing,
-                       falses(n), false, Float64(data.spectrum.exposure_time), label)
+    return AlignedDetectorSpectrum(target.grid, target.coordinate, zeros(n), spzeros(n, n), nothing,
+                                   has_model ? zeros(n) : nothing, unfold ? zeros(n) : nothing,
+                                   zeros(n), false, Float64(data.spectrum.exposure_time), label)
 end
 
 function _read_plot_member(member::_MemberResponse, coordinate, flux, label; unfold)
@@ -138,8 +185,8 @@ function _read_plot_member(member::_MemberResponse, coordinate, flux, label; unf
     background = if !isnothing(member.background)
         _PlotBackground(copy(member.background), spdiagm(0 => member.background_variance), member.alpha)
     end
-    return _PlotMember(member.grid, coordinate, copy(member.counts), spdiagm(0 => member.variance),
-                       background, model, weights, trues(length(member.grid)), false, member.exposure, label)
+    return AlignedDetectorSpectrum(member.grid, coordinate, copy(member.counts), spdiagm(0 => member.variance),
+                                   background, model, weights, ones(length(member.grid)), false, member.exposure, label)
 end
 
 _integrated_plot_flux(edges, model) = SF.invokemodel(edges, model)
@@ -195,61 +242,34 @@ function _plot_plans(groupings, n)
     return plans
 end
 
-function _coarsen_plot_grid(original, spans)
-    low, high = Float64[], Float64[]
-    i, group = 1, 1
-    while i <= length(original)
-        stop = i
-        while group <= length(spans) && spans.low[group] < original.low[i] &&
-                !_roundtrip_edge(spans.low[group], original.low[i])
-            group += 1
-        end
-        if group <= length(spans) && _roundtrip_edge(spans.low[group], original.low[i])
-            endpoint = spans.high[group]
-            while stop < length(original) && original.high[stop] < endpoint &&
-                    !_roundtrip_edge(original.high[stop], endpoint) &&
-                    _roundtrip_edge(original.high[stop], original.low[stop + 1])
-                stop += 1
-            end
-            _roundtrip_edge(original.high[stop], endpoint) || (stop = i)
-            group += 1
-        end
-        push!(low, original.low[i])
-        push!(high, original.high[stop])
-        i = stop + 1
-    end
-    return BinGrid(low, high)
-end
-
 function _native_fit_plot_input(data, model, extension; groupings, pooling, reference, unfold)
     isnothing(reference) || reference == 1 || throw(ArgumentError("reference must index an observation"))
     plan = only(_plot_plans(groupings, 1))
-    target = pooling ? _original_detector_grid(data) : nothing
-    if isnothing(plan)
-        rows = _selected_rows(data, nothing)
-    else
-        grouped = _group_geometry(data, plan)
-        rows = grouped.active_rows
-        spans = _detector_energy_grid(grouped.low, grouped.high)
-        target = pooling ? _coarsen_plot_grid(target, spans) : spans
-    end
+    pooling && !isnothing(plan) && _pooled_grouping_error()
+    target = pooling ? (grid = _original_detector_grid(data), coordinate = :energy) : nothing
+    grouped = isnothing(plan) ? nothing : _group_geometry(data, plan)
+    rows = isnothing(grouped) ? _selected_rows(data, nothing) : grouped.active_rows
     source = _plot_model_flux(data.domain, model, extension)
     if pooling && isempty(rows)
         member = _empty_plot_member(data, target; unfold, has_model = true)
         return (; members = [member], target, source, summed = false)
     end
-    geometry = _geometry(data, rows)
+    geometry = isnothing(grouped) ? _geometry(data, rows) : grouped.geometry
     fold = SF.objective_transformer(SF.ContiguouslyBinned(u"counts"), data)
     folded = vec(fold(data.domain, copy(source.values)))
     fit_rows = findall(data.data_mask)
     ordered_rows = geometry.ascending ? rows : reverse(rows)
     counts = collect(Float64, folded[searchsortedfirst.(Ref(fit_rows), ordered_rows)])
     member = _read_plot_member(data, rows, geometry; unfold, read_background = true, model = counts)
-    if !pooling && !isnothing(target)
-        member = _move_plot_member(member, target, :energy, overlap_projection(member.grid, target))
+    if !isnothing(grouped)
+        spans = _detector_energy_grid(grouped.low, grouped.high)
+        member = _move_plot_member(member, spans, :energy, overlap_projection(member.grid, spans))
     end
     return (; members = [member], target, source, summed = false)
 end
+
+_pooled_grouping_error() =
+    throw(ArgumentError("groupings applies to native spectra; use rebin=N to group a pooled detector grid"))
 
 function _native_plot_inputs(input, model, extension; groupings, pooling, reference, unfold, read_background)
     datasets = if input isa GridMatch
@@ -266,6 +286,7 @@ function _native_plot_inputs(input, model, extension; groupings, pooling, refere
     ref = isnothing(reference) ? (input isa GridMatch ? input.reference : 1) : reference
     1 <= ref <= length(datasets) || throw(ArgumentError("reference must index an observation"))
     plans = _plot_plans(groupings, length(datasets))
+    pooling && any(!isnothing, plans) && _pooled_grouping_error()
     shown = if pooling
         datasets
     else
@@ -273,33 +294,25 @@ function _native_plot_inputs(input, model, extension; groupings, pooling, refere
             isnothing(plan) ? data : grouped_dataset(data, plan)
         end
     end
-    raw_plans = pooling ? plans : ntuple(_ -> nothing, length(plans))
     has_model = !isnothing(model)
     match = if has_model
         edges = input isa GridMatch ? input.model_edges : nothing
         match_dataset_grids(shown; grid = edges, reference = ref)
     end
     source = has_model ? _plot_model_flux(match.model_edges, model, extension) : nothing
-    members = _PlotMember[]
+    members = AlignedDetectorSpectrum[]
     target = if pooling
-        input isa GridMatch ? input.detector_grids[ref] : _original_detector_grid(datasets[ref])
+        input isa GridMatch ? _detector_target(input, reference) :
+            (grid = _original_detector_grid(datasets[ref]), coordinate = :energy)
     end
     for i in eachindex(shown)
-        data, plan = shown[i], raw_plans[i]
-        if isnothing(plan)
-            rows = _selected_rows(data, nothing)
-            if pooling && isempty(rows)
-                push!(members, _empty_plot_member(data, target; unfold, has_model))
-                continue
-            end
-            geometry = _geometry(data, rows)
-        else
-            grouped = _group_geometry(data, plan)
-            rows, geometry = grouped.active_rows, grouped.geometry
-            if i == ref
-                target = _coarsen_plot_grid(target, _detector_energy_grid(grouped.low, grouped.high))
-            end
+        data = shown[i]
+        rows = _selected_rows(data, nothing)
+        if pooling && isempty(rows)
+            push!(members, _empty_plot_member(data, target; unfold, has_model))
+            continue
         end
+        geometry = _geometry(data, rows)
         label = string(SF.make_label(data))
         member = if has_model
             prepared = _member_response(data, match.native_grids[i], match.projections[i], :energy, rows, geometry)
@@ -319,10 +332,10 @@ function _prepared_plot_inputs(data::AbstractGridDataset, model, extension; unfo
     if summed && !isnothing(reference)
         throw(ArgumentError("a summed dataset already has a reference detector grid"))
     end
-    target = if !summed
-        ref = isnothing(reference) ? data.reference : reference
-        1 <= ref <= length(data.members) || throw(ArgumentError("reference must index an observation"))
-        pooling ? _coarsen_plot_grid(data.detector_grids[ref], data.members[ref].grid) : nothing
+    target = if summed
+        (grid = data.grid, coordinate = data.coordinate)
+    elseif pooling || !isnothing(reference)
+        _detector_target(data, reference)
     end
     coordinate = summed ? data.coordinate : :energy
     members = [_read_plot_member(member, coordinate, flux, "$(data.name) [$i]"; unfold)
@@ -332,4 +345,14 @@ function _prepared_plot_inputs(data::AbstractGridDataset, model, extension; unfo
                    for (member, overlap) in zip(members, data.overlaps)]
     end
     return (; members, target, source, summed)
+end
+
+function _read_plot_inputs(data, model, extension, fit_stat; groupings, pooling, reference, unfold, read_background)
+    if data isa AbstractGridDataset
+        isnothing(groupings) || throw(ArgumentError("prepared datasets already have detector grouping; use rebin for display"))
+        return _prepared_plot_inputs(data, model, extension; unfold, pooling, reference)
+    elseif data isa SF.SpectralData && !isnothing(model) && !isnothing(fit_stat)
+        return _native_fit_plot_input(data, model, extension; groupings, pooling, reference, unfold)
+    end
+    return _native_plot_inputs(data, model, extension; groupings, pooling, reference, unfold, read_background)
 end

@@ -70,7 +70,7 @@ function _residual_curve(members, xaxis, mode, statistic, background)
     first_member = first(members)
     grid, order = _convert_plot_grid(first_member.grid, first_member.coordinate, xaxis)
     n = length(grid)
-    covered = reduce((a, b) -> a .| b, (m.covered for m in members))
+    covered = _display_coverage(members, :include)
     observed = reduce(+, (m.counts for m in members))
     source = reduce(+, (m.model for m in members))
     variance = reduce(+, (diag(m.covariance) for m in members))
@@ -114,7 +114,7 @@ function _residual_curve(members, xaxis, mode, statistic, background)
             if statistic == :wstat
                 for member in members
                     bkg = member.background
-                    if !isnothing(bkg) && member.covered[i] && bkg.alpha > 0
+                    if !isnothing(bkg) && member.coverage[i] > 0 && bkg.alpha > 0
                         bkg.counts[i] >= 0 || throw(ArgumentError("W-stat requires raw nonnegative off-region counts"))
                         push!(off_counts, bkg.counts[i])
                         push!(scales, bkg.alpha)

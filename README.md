@@ -185,12 +185,14 @@ total counts divided by total exposure. A `SummedDataset` uses its existing
 target grid. Other pooled plots use the reference observation's original RMF
 detector grid and gather eligible contributions from every observation.
 Exposure normalization uses the total observation exposure across gaps.
-Matching uses wavelength by default, and
-`matching_coordinate=:energy` switches the overlaps to keV. The display
-axis can be `:energy`, `:wavelength`, or `:frequency`.
+Matching uses wavelength by default, with an energy fallback for a
+zero-energy edge. Set `matching_coordinate=:energy` to use keV explicitly.
+The display axis can be `:energy`, `:wavelength`, or `:frequency`.
 
-`groupings` accepts one detector grouping plan per native observation.
-`rebin` coarsens displayed bins, while preserving detector gaps. The
+Use `groupings` for individual native plots. For pooled plots, `rebin=N` groups
+up to `N` consecutive common-grid bins after alignment. Use `detector_grid`,
+`align_detector_grids`, and `rebin_detector_grid` to inspect the grid and
+each observation's contributions. The
 default `background=:subtract` shows on-region counts minus scaled off-region
 counts. `:include` shows the on-region spectrum and `:only` shows the
 scaled off-region background. The returned numerical curves preserve their

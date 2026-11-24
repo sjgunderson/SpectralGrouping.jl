@@ -74,17 +74,18 @@ end
     @test joint.model_edges == 1.0:0.5:8.0
     @test joint.detector_grids[1].low == 1:7
     @test joint.counts == [30, 7, 30, 40, 9]
-    for curve in (only(plot_curves(match; opts..., groupings = plans, background = :include).data),
-                  only(plot_curves(joint; opts..., background = :include).data))
-        @test curve.grid.low == [1, 3, 4, 5, 6]
-        @test curve.grid.high == [3, 4, 5, 6, 8]
-        @test curve.y[curve.valid] == [30, 30, 40, 16]
-        @test isnan(curve.y[4])
-    end
+    @test_throws ArgumentError plot_curves(match; opts..., groupings = plans)
+    individual = plot_curves(match; kind = :counts, groupings = plans, background = :include)
+    @test first(individual.data).grid.low == [1, 6]
+    @test first(individual.data).y == [30, 7]
+    curve = only(plot_curves(joint; opts..., rebin = 2, background = :include).data)
+    @test curve.grid.low == [1, 3, 5, 7]
+    @test curve.grid.high == [3, 5, 7, 8]
+    @test curve.y == [30, 70, 3.5, 12.5]
     rebinned = only(plot_curves(joint; opts..., rebin = 10, background = :include).data)
-    @test rebinned.grid.low == [1, 5, 6]
-    @test rebinned.grid.high == [5, 6, 8]
-    @test isequal(rebinned.y, [100, NaN, 16])
+    @test rebinned.grid.low == [1]
+    @test rebinned.grid.high == [8]
+    @test rebinned.y == [116]
 
     a.data_mask .= false
     empty_ref = only(plot_curves((a, b); opts..., background = :include).data)
@@ -124,6 +125,12 @@ end
     @test curves.grid.high == [2, 4]
     @test curves.y == [6, 13]
     @test only(plot_curves((gap, full); opts..., reference = 2).data).y == [6, 50, 13]
+    supplied = match_dataset_grids(gap, full; detector_grid = 1.0:4.0)
+    @test detector_grid(supplied).low == [1, 2, 3]
+    @test detector_grid(supplied; reference = 1).low == [1, 3]
+    @test only(plot_curves(supplied; opts..., rebin = 2).data).y == [56, 13]
+    @test detector_grid(combine_datasets(supplied)).low == [1, 2, 3]
+    @test combine_datasets(supplied; mode = :sum, coordinate = :energy).grid.low == [1, 3]
 
     # The RMF can retain an EBOUNDS channel that is absent from the source PHA.
     partial = SF.SpectralData{Float64,Nothing,Nothing}(
