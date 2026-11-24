@@ -29,6 +29,21 @@ using CairoMakie: Axis, Figure, save
     end
 end
 
+@testset "CairoMakie shared-width RGS plot" begin
+    rgs1, rgs2, _ = rgs_width_pair()
+    matched = match_dataset_grids(rgs1, rgs2)
+    display = plot_counts(matched; combine = :sum, xaxis = :wavelength,
+                          background = :include, rebin = 4)
+    curve = only(display.curves.data)
+    @test isapprox(curve.grid.high .- curve.grid.low, fill(0.040, 3))
+    @test isapprox(curve.y, [4, 8, 12])
+    mktempdir() do folder
+        path = joinpath(folder, "rgs-shared-width.png")
+        save(path, display.figure)
+        @test filesize(path) > 0
+    end
+end
+
 include(joinpath(@__DIR__, "..", "docs", "examples", "plotting.jl"))
 
 @testset "Runnable plotting guide" begin

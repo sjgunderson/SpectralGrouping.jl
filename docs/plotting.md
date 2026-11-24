@@ -66,19 +66,19 @@ display conventions.
 
 ```julia
 rgs = match_dataset_grids(rgs1, rgs2; reference = 2)
-combined = plot_counts(rgs; combine = :sum, xaxis = :wavelength,
-                       background = :include, rebin = 2)
+before = plot_counts(rgs; combine = :sum, xaxis = :wavelength, rebin = 1)
+after = plot_counts(rgs; combine = :sum, xaxis = :wavelength, rebin = 4)
+unfolded = plot_unfold(rgs; combine = :sum, xaxis = :wavelength, rebin = 4)
 rgs1_target = plot_counts(rgs; combine = :sum, reference = 1, xaxis = :wavelength)
 individual = plot_counts((rgs1, rgs2); combine = :none, xaxis = :wavelength)
-curve = only(plot_curves(rgs; kind = :counts, combine = :sum).data)
-curve.y[curve.valid]
 ```
 
 For a pooled raw collection, `GridMatch`, or `JointDataset` (including a fit
 result slice), the chosen reference supplies its original RMF detector
-channel boundaries. A raw collection defaults to observation 1. A match or
-joint dataset reuses its saved reference. `reference` on the plot overrides
-that choice. A prepared `SummedDataset` uses its fitted grid.
+channel boundaries by default. A raw collection defaults to observation 1.
+A match or joint dataset reuses its resolved detector target. `reference`
+on the plot selects that observation's original grid. A prepared
+`SummedDataset` uses its fitted grid.
 
 Only good-quality, noticed channels contribute. If an RGS1 channel is bad
 and RGS2 covers the same interval, the RGS2 measurement survives on the
@@ -88,14 +88,54 @@ Covered zero-count bins remain valid. The overlap integration crops at the
 chosen target's boundaries. Offset references can give different bins and
 totals if their extents differ. Wavelength is the default overlap
 coordinate. Set `matching_coordinate=:energy` for overlaps in keV
-independently of the displayed `xaxis`.
+independently of the displayed `xaxis`. If any input to the overlap has a
+zero-energy edge, the default overlap coordinate switches to energy.
+A zero-energy target edge cannot be displayed in wavelength. For an
+unfolded energy or frequency plot, a bin starting at zero stays blank
+because its wavelength span is infinite.
 
-Apply `groupings` to the original observations or while preparing a joint
-dataset. The reference plan coarsens its assigned spans and retains the
-other original target bins. `rebin` further coarsens a display by up to the
-specified number of adjacent bins. It stops at geometric gaps and bins
-without contributors. `plot_curves` exposes bin edges, the validity mask,
-errors, and propagated covariance without a graphics backend.
+Replace a reference `:width` plan passed through `groupings` on a pooled plot
+with `rebin=N`. Each observation is projected separately onto the full
+ungrouped target before the same width grouping is applied to all of them.
+Groups start at the lower edge of each contiguous segment in the matching
+coordinate. A segment boundary or final remainder can leave a short group.
+Masks leave the grouping phase intact. A group with zero coverage across all
+members stays blank. Partially covered groups contain the measured counts
+and sensitivity, with counts and sensitivity summed before unfolding.
+A uniform 0.010 Å target gives 0.040 Å full-width groups for `rebin=4`.
+
+Use native `groupings` for individual plots or when preparing a joint fit.
+A plot from a grouped fit projects the fitted bins that are available.
+This projection assumes constant density within each fitted bin and cannot
+recover its original measurements. `plot_curves` exposes bin edges,
+validity, errors, and covariance without a graphics backend.
+
+```julia
+target = detector_grid(rgs; coordinate = :wavelength)
+alignment = align_detector_grids(rgs; unfold = true)
+grouped = rebin_detector_grid(alignment, 4)
+widths_in_angstrom = grouped.grid.high .- grouped.grid.low
+grouped.channels_per_bin
+grouped.members[1].coverage  # geometric fraction measured by RGS1
+grouped.members[2].weights   # folded response sensitivity from RGS2
+```
+
+Each member retains its own counts, covariance, scaled-background inputs,
+and folded prediction when a model or fit result is supplied. Coverage is a
+geometric fraction in the matching coordinate. It is separate from response
+sensitivity and exposure. Quantitative comparison with SAS also depends on
+the per-channel AREASCAL and BACKSCAL calibration.
+
+Supply a complete detector grid explicitly if the reference EBOUNDS lacks
+the edges you need or if you want uniform widths in a particular coordinate.
+`detector_grid` takes a paired `BinGrid` or a vector of contiguous edges.
+`grid=` continues to set the incident model grid in keV.
+
+```julia
+uniform_rgs = match_dataset_grids(rgs1, rgs2;
+    detector_grid = 10.0:0.010:24.0, detector_coordinate = :wavelength)
+plot_unfold(uniform_rgs; combine = :sum, xaxis = :wavelength, rebin = 4)
+```
 
 `background=:subtract` displays source-region counts minus each member's
 scaled off counts. `:include` shows the source-region counts and adds the

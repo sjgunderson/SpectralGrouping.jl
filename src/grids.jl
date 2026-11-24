@@ -86,7 +86,7 @@ function _original_detector_grid(data::SF.SpectralData)
     return _detector_energy_grid(low[order], high[order])
 end
 
-"""Matched incident grids and original RMF detector grids, all in keV."""
+"""Matched incident grids, original RMF detector grids, and a shared display target."""
 struct GridMatch{D<:Tuple}
     datasets::D
     model_edges::Vector{Float64}
@@ -94,30 +94,42 @@ struct GridMatch{D<:Tuple}
     projections::Vector{Vector{UnitRange{Int}}}
     reference::Int
     detector_grids::Vector{BinGrid}
+    detector_target::BinGrid
+    detector_coordinate::Symbol
 end
 
-function GridMatch{D}(datasets, model_edges, native_grids, projections, reference) where {D<:Tuple}
+function GridMatch{D}(datasets, model_edges, native_grids, projections, reference,
+                      detector_grids = BinGrid[_original_detector_grid(data) for data in datasets]) where {D<:Tuple}
     return GridMatch{D}(datasets, model_edges, native_grids, projections, reference,
-                        BinGrid[_original_detector_grid(data) for data in datasets])
+                        detector_grids, detector_grids[reference], :energy)
 end
 
-GridMatch(datasets::D, model_edges, native_grids, projections, reference) where {D<:Tuple} =
-    GridMatch{D}(datasets, model_edges, native_grids, projections, reference)
+GridMatch(datasets::D, model_edges, native_grids, projections, reference, detector_grids...) where {D<:Tuple} =
+    GridMatch{D}(datasets, model_edges, native_grids, projections, reference, detector_grids...)
 
 """
-    match_dataset_grids(datasets; grid=nothing, reference=1)
+    match_dataset_grids(datasets; grid=nothing, reference=1,
+                        detector_grid=nothing, detector_coordinate=:energy)
 
 Build a common incident model grid in keV. By default it contains every native
 RMF input edge. A supplied contiguous grid must include all these boundaries.
-`reference` indexes the member that supplies the default detector target.
+The full reference RMF detector grid supplies the ungrouped display target.
+Pass `detector_grid` as a `BinGrid` or an edge vector to override that target,
+in keV (`detector_coordinate=:energy`) or Å (`:wavelength`). Inspect the
+resolved display target with `detector_grid(match)`.
 """
-function match_dataset_grids(datasets::Union{Tuple, AbstractVector}; grid = nothing, reference::Integer = 1)
+function match_dataset_grids(
+    datasets::Union{Tuple,AbstractVector}; grid = nothing, reference::Integer = 1,
+    detector_grid = nothing, detector_coordinate::Symbol = :energy,
+)
     members = Tuple(datasets)
     !isempty(members) && all(data -> data isa SF.SpectralData, members) ||
         throw(ArgumentError("provide one or more SpectralFitting SpectralData objects"))
     length(IdDict(data => nothing for data in members)) == length(members) ||
         throw(ArgumentError("a dataset cannot appear twice in a match"))
     1 <= reference <= length(members) || throw(ArgumentError("reference must index a matched dataset"))
+    detector_coordinate in (:energy, :wavelength) ||
+        throw(ArgumentError("detector_coordinate must be :energy (keV) or :wavelength (Å)"))
     native = BinGrid[_incident_grid(data) for data in members]
     edges = if isnothing(grid)
         sort!(unique!(reduce(vcat, (vcat(g.low, g.high) for g in native))))
@@ -133,7 +145,16 @@ function match_dataset_grids(datasets::Union{Tuple, AbstractVector}; grid = noth
         all(starts .<= stops) || throw(ArgumentError("a native incident bin collapsed on the shared grid"))
         [start:stop for (start, stop) in zip(starts, stops)]
     end
-    return GridMatch(members, edges, native, projections, Int(reference))
+    detectors = BinGrid[_original_detector_grid(data) for data in members]
+    if isnothing(detector_grid)
+        return GridMatch(members, edges, native, projections, Int(reference), detectors)
+    end
+    target = _bin_grid(detector_grid)
+    if detector_coordinate == :wavelength && iszero(first(target.low))
+        throw(ArgumentError("a wavelength detector grid requires positive boundaries"))
+    end
+    return GridMatch(members, edges, native, projections, Int(reference),
+                     detectors, target, detector_coordinate)
 end
 
 match_dataset_grids(first::SF.SpectralData, rest::SF.SpectralData...; kwargs...) =

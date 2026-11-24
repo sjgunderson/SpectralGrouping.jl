@@ -29,7 +29,7 @@ function _display_coverage(members, background)
     covered = falses(length(first(members).grid))
     for member in members
         if background != :only || !isnothing(member.background)
-            covered .|= member.covered
+            covered .|= member.coverage .> 0
         end
     end
     return covered
@@ -66,8 +66,21 @@ function _power_weights(grid, power, power_scale)
     return weights
 end
 
-function _plot_align(members, grid, coordinate)
-    return map(members) do member
+_zero_energy_edge(grid, coordinate) = coordinate == :energy && iszero(first(grid.low))
+
+function _align_plot_inputs(inputs, matching_coordinate)
+    target = inputs.target
+    if inputs.summed
+        return DetectorAlignment(target.grid, target.coordinate, inputs.members, ones(Int, length(target.grid)))
+    end
+    coordinate = matching_coordinate
+    if isnothing(coordinate)
+        zero_edge = _zero_energy_edge(target.grid, target.coordinate) ||
+            any(m -> _zero_energy_edge(m.grid, m.coordinate), inputs.members)
+        coordinate = zero_edge ? :energy : :wavelength
+    end
+    grid, _ = _convert_plot_grid(target.grid, target.coordinate, coordinate)
+    members = map(inputs.members) do member
         oriented = _orient_plot_member(member, coordinate)
         if oriented.grid.low == grid.low && oriented.grid.high == grid.high
             return oriented
@@ -75,24 +88,44 @@ function _plot_align(members, grid, coordinate)
         projection = overlap_projection(oriented.grid, grid)
         return _move_plot_member(oriented, grid, coordinate, projection)
     end
+    return DetectorAlignment(grid, coordinate, members, ones(Int, length(grid)))
 end
 
-function _plot_rebin(members, factor, background)
-    factor == 1 && return members
-    base = first(members)
-    grid = base.grid
-    usable = _display_coverage(members, background)
-    if !isnothing(base.weights)
-        usable .&= _display_weights(members, background) .> 0
-    end
+function _check_matching_coordinate(coordinate)
+    isnothing(coordinate) || coordinate in (:energy, :wavelength) ||
+        throw(ArgumentError("matching_coordinate must be :energy or :wavelength"))
+end
 
+"""
+    align_detector_grids(input; model=nothing, unfold=false, matching_coordinate=nothing,
+                         reference=nothing, index=1)
+
+Project each observation independently onto the ungrouped common detector grid.
+Accepts a `GridMatch`, raw observations, a prepared dataset, or a fit result.
+Returns a `DetectorAlignment` with separate counts, covariance, background,
+folded model (if supplied by `model` or a result), and geometric coverage.
+Set `unfold=true` to also project response sensitivity. Default overlaps are
+in wavelength, with an energy fallback for a zero-energy edge.
+"""
+function align_detector_grids(
+    input; model = nothing, unfold::Bool = false, matching_coordinate = nothing,
+    reference = nothing, index::Integer = 1,
+)
+    _check_matching_coordinate(matching_coordinate)
+    data, source, extension, fit_stat = _resolve_plot_input(input, model, index, true)
+    inputs = _read_plot_inputs(data, source, extension, fit_stat; groupings = nothing,
+                               pooling = true, reference, unfold, read_background = true)
+    return _align_plot_inputs(inputs, matching_coordinate)
+end
+
+function _detector_rebin_map(grid, factor; usable = nothing)
     starts, stops, destinations = Int[], Int[], Int[]
     start = firstindex(grid.low)
     for i in eachindex(grid.low)
         push!(destinations, length(starts) + 1)
         at_end = i == length(grid)
-        split = at_end || !usable[i] || !usable[i + 1] ||
-            !_roundtrip_edge(grid.high[i], grid.low[i + 1])
+        split = at_end || !_roundtrip_edge(grid.high[i], grid.low[i + 1]) ||
+            (!isnothing(usable) && (!usable[i] || !usable[i + 1]))
         if split || i - start + 1 == factor
             push!(starts, start)
             push!(stops, i)
@@ -102,7 +135,36 @@ function _plot_rebin(members, factor, background)
     rebinned = BinGrid(grid.low[starts], grid.high[stops])
     projection = sparse(destinations, collect(1:length(grid)), ones(length(grid)),
                         length(rebinned), length(grid))
-    return [_move_plot_member(member, rebinned, base.coordinate, projection) for member in members]
+    return rebinned, projection
+end
+
+"""
+    rebin_detector_grid(aligned::DetectorAlignment, width)
+
+Apply one map of `width` consecutive aligned bins to every observation.
+Each geometric segment starts a new group and keeps any short remainder.
+Masks and sensitivity do not change the grouping boundaries. Use
+`channels_per_bin` and each member's `coverage` to identify short groups
+and bins with incomplete measurement coverage.
+"""
+function rebin_detector_grid(aligned::DetectorAlignment, width::Integer)
+    width > 0 || throw(ArgumentError("detector rebin width must be positive"))
+    width == 1 && return aligned
+    grid, projection = _detector_rebin_map(aligned.grid, width)
+    members = [_move_plot_member(member, grid, aligned.coordinate, projection) for member in aligned.members]
+    channel_counts = Int.(projection * aligned.channels_per_bin)
+    return DetectorAlignment(grid, aligned.coordinate, members, channel_counts)
+end
+
+function _plot_rebin(members, factor, background)
+    factor == 1 && return members
+    base = first(members)
+    usable = _display_coverage(members, background)
+    if !isnothing(base.weights)
+        usable .&= _display_weights(members, background) .> 0
+    end
+    grid, projection = _detector_rebin_map(base.grid, factor; usable)
+    return [_move_plot_member(member, grid, base.coordinate, projection) for member in members]
 end
 
 function _plot_coefficients(members, normalization, combine)
@@ -162,6 +224,13 @@ function _flux_multiplier(grid, xaxis, flux_unit, power, power_scale)
     return conversion .* weighting
 end
 
+function _display_wavelength_widths(grid, coordinate)
+    coordinate == :wavelength && return _widths(grid)
+    energy, _ = _convert_plot_grid(grid, coordinate, :energy)
+    # A detector interval starting at zero energy has an infinite wavelength span.
+    return HC_KEV_ANGSTROM .* (_widths(energy) ./ energy.low ./ energy.high)
+end
+
 function _display_run(members, opts)
     base = first(members)
     grid, order = _convert_plot_grid(base.grid, base.coordinate, opts.xaxis)
@@ -183,15 +252,15 @@ function _display_run(members, opts)
     valid = covered
     weights = nothing
     multiplication = if unfolding
-        wavelength, wave_order = _convert_plot_grid(base.grid, base.coordinate, :wavelength)
-        wavelength_width = _widths(wavelength)[invperm(wave_order)][order]
+        wavelength_width = _display_wavelength_widths(base.grid, base.coordinate)[order]
         weights = _display_weights(members, opts.background)[order]
-        valid = covered .& isfinite.(weights) .& (weights .> 0)
+        valid = covered .& isfinite.(weights) .& (weights .> 0) .&
+            isfinite.(wavelength_width) .& (wavelength_width .> 0)
         if opts.combine == :none && !any(valid)
             throw(ArgumentError("the selected bins have no finite positive response sensitivity"))
         end
         multiplier = _flux_multiplier(grid, opts.xaxis, opts.flux_unit, opts.power, opts.power_scale)
-        wavelength_width .* multiplier ./ _widths(grid) ./ ifelse.(valid, weights, 1.0)
+        ifelse.(valid, wavelength_width, 0.0) .* multiplier ./ _widths(grid) ./ ifelse.(valid, weights, 1.0)
     else
         multiplier = _power_weights(grid, opts.power, opts.power_scale)
         opts.normalization == :rate_density ? multiplier ./ _widths(grid) : multiplier
@@ -284,12 +353,14 @@ end
 Prepare detector-bin curves without loading a graphics backend. Pass a
 SpectralData, GridMatch, prepared joint/summed dataset, or SpectralFitting fit
 result. Use `kind=:counts` for counts per bin and `kind=:unfold` for
-response-corrected flux. For native inputs, pass `model` to overlay a source
-and `groupings` to apply detector plans. Fit results supply parameter values.
+response-corrected flux. Pass `model` to overlay a source. For individual
+native plots, `groupings` applies detector plans. For pooled plots, `rebin`
+groups consecutive bins of the common detector grid. Fit results supply
+parameter values.
 """
 function plot_curves(
     input; kind::Symbol = :data, xaxis::Symbol = :energy, normalization::Symbol = :rate_density,
-    combine::Symbol = :none, matching_coordinate::Symbol = :wavelength, reference = nothing,
+    combine::Symbol = :none, matching_coordinate = nothing, reference = nothing,
     groupings = nothing, rebin::Integer = 1, background::Symbol = :subtract,
     model = nothing, index::Integer = 1, res::Integer = 0, residual_stat::Symbol = :auto,
     show_model::Bool = true, model_display::Symbol = :convolved, flux_unit::Symbol = :photons,
@@ -297,7 +368,7 @@ function plot_curves(
 )
     kind in (:data, :counts, :unfold) || throw(ArgumentError("kind must be :data, :counts, or :unfold"))
     xaxis in (:energy, :wavelength, :frequency) || throw(ArgumentError("unknown display coordinate"))
-    matching_coordinate in (:energy, :wavelength) || throw(ArgumentError("unknown matching coordinate"))
+    _check_matching_coordinate(matching_coordinate)
     normalization in (:counts, :rate, :rate_density) || throw(ArgumentError("unknown count normalization"))
     combine in (:none, :sum, :mean, :exposure, :mean_exposure) ||
         throw(ArgumentError("unknown combination mode"))
@@ -323,27 +394,17 @@ function plot_curves(
     )
     res > 0 && isnothing(source_model) && throw(ArgumentError("residuals require a source model or a fit result"))
     pooling = combine != :none || data isa SummedDataset
-    inputs = if data isa AbstractGridDataset
-        isnothing(groupings) || throw(ArgumentError("prepared datasets already have detector grouping; use rebin for display"))
-        _prepared_plot_inputs(data, source_model, extension; unfold = unfolding, pooling, reference)
-    elseif data isa SF.SpectralData && !isnothing(source_model) && !isnothing(fit_stat)
-        _native_fit_plot_input(data, source_model, extension; groupings, pooling, reference, unfold = unfolding)
-    else
-        _native_plot_inputs(data, source_model, extension; groupings, pooling, reference,
-                            unfold = unfolding, read_background = background != :include)
-    end
+    inputs = _read_plot_inputs(data, source_model, extension, fit_stat; groupings, pooling,
+                               reference, unfold = unfolding, read_background = background != :include)
     members = inputs.members
     groups = if pooling
-        if inputs.summed
+        if inputs.summed && combine == :none
             # The detector overlap matrices on the fitted sum define the physical view.
-            if combine == :none
-                combine = normalization == :counts || unfolding ? :sum : :exposure
-            end
-        else
-            grid, _ = _convert_plot_grid(inputs.target, :energy, matching_coordinate)
-            members = _plot_align(members, grid, matching_coordinate)
+            combine = normalization == :counts || unfolding ? :sum : :exposure
         end
-        [_plot_rebin(members, rebin, background)]
+        aligned = _align_plot_inputs(inputs, matching_coordinate)
+        members = rebin_detector_grid(aligned, rebin).members
+        [members]
     else
         [_plot_rebin([member], rebin, background) for member in members]
     end
