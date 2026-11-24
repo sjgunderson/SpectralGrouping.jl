@@ -26,6 +26,13 @@ struct JointDataset <: AbstractGridDataset
     reference::Int
     detector_target::BinGrid
     detector_coordinate::Symbol
+    display_rebin::Int
+end
+
+function JointDataset(model_edges, members, member_ranges, counts, variance, name,
+                      detector_grids, reference, detector_target, detector_coordinate)
+    return JointDataset(model_edges, members, member_ranges, counts, variance, name,
+                        detector_grids, reference, detector_target, detector_coordinate, 1)
 end
 
 JointDataset(model_edges, members, member_ranges, counts, variance, name, detector_grids, reference) =
@@ -167,9 +174,12 @@ function _joint_dataset(match, plans, name)
     ranges = [(offsets[i] + 1):offsets[i + 1] for i in eachindex(members)]
     counts = reduce(vcat, (member.counts for member in members))
     variance = reduce(vcat, (member.variance for member in members))
+    width = isnothing(first(plans)) ? nothing : first(plans).target_width
+    display_rebin = !isnothing(width) &&
+        all(plan -> !isnothing(plan) && plan.target_width == width, plans) ? width : 1
     return JointDataset(copy(match.model_edges), members, ranges, counts, variance, name,
                         map(_bin_grid, match.detector_grids), match.reference,
-                        _bin_grid(match.detector_target), match.detector_coordinate)
+                        _bin_grid(match.detector_target), match.detector_coordinate, display_rebin)
 end
 
 _raw_counts(values) = all(x -> x >= 0 && abs(x - round(x)) <= EDGE_RTOL * max(1.0, abs(x)), values)

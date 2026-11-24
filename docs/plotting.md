@@ -105,6 +105,12 @@ and sensitivity, with counts and sensitivity summed before unfolding.
 A uniform 0.010 Å target gives 0.040 Å full-width groups for `rebin=4`.
 
 Use native `groupings` for individual plots or when preparing a joint fit.
+A pooled plot from a joint dataset or fit that used the same `:width` target
+for every observation defaults to that width on the shared display grid.
+For example, a joint fit built with 20-channel width plans shows one error
+bar at the center of each displayed group. Pass `rebin` explicitly to
+override the width, or to select a shared width when the fit plans differ
+or use count or S/N targets. `rebin=1` selects the ungrouped display target.
 A plot from a grouped fit projects the fitted bins that are available.
 This projection assumes constant density within each fitted bin and cannot
 recover its original measurements. `plot_curves` exposes bin edges,

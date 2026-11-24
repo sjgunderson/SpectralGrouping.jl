@@ -110,6 +110,35 @@ end
     @test isapprox(sum(grouped.members[2].counts), 8)
 end
 
+@testset "Pooled plot defaults to the common fixed fit width" begin
+    a, b, wave = rgs_width_pair(; n = 60, good1 = [1:20; 41:60], good2 = 21:60)
+    matched = match_dataset_grids(a, b)
+    plans = [grouping_plan(d, :width, 20) for d in (a, b)]
+    joint = combine_datasets(matched; groupings = plans)
+    model = GridTestSource(SF.FitParam(1.0))
+    cfg = SF.FittingConfig(SF.FittingProblem(model => joint); stat = grid_statistic(joint))
+    fit = SF.finalize_result(cfg, [1.0], nothing)
+    opts = (; kind = :counts, combine = :sum, xaxis = :wavelength, background = :include)
+
+    for input in (joint, fit)
+        curve = only(plot_curves(input; opts...).data)
+        @test isapprox(curve.grid.low, wave[[1, 21, 41]])
+        @test isapprox(curve.y, [20, 40, 60])
+        @test isapprox(curve.error, sqrt.([20, 40, 60]))
+        @test length(only(plot_curves(input; opts..., rebin = 10).data).grid) == 6
+        @test length(only(plot_curves(input; opts..., rebin = 1).data).grid) == 60
+        @test length(align_detector_grids(input).grid) == 60
+    end
+    native = plot_curves(fit; kind = :counts, combine = :none, xaxis = :wavelength)
+    @test [length(curve.grid) for curve in native.data] == [2, 2]
+    @test joint.counts == [20, 20, 40, 40]
+
+    mixed = combine_datasets(matched; groupings = (plans[1], grouping_plan(b, :width, 10)))
+    @test length(only(plot_curves(mixed; opts...).data).grid) == 60
+    count_grouped = combine_datasets(matched; groupings = [grouping_plan(d, :counts, 10) for d in (a, b)])
+    @test length(only(plot_curves(count_grouped; opts...).data).grid) == 60
+end
+
 @testset "Fractional overlap, shared covariance, and zero energy bounds" begin
     a = dataset(spectrum(1:4, [8, 900, 12, 900]; quality = [0, 1, 0, 1],
                          statistics = SF.ErrorStatistics.Poisson))
