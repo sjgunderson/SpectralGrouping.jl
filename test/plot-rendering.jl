@@ -28,3 +28,18 @@ using CairoMakie: Axis, Figure, save
         @test filesize(path) > 0
     end
 end
+
+include(joinpath(@__DIR__, "..", "docs", "examples", "plotting.jl"))
+
+@testset "Runnable plotting guide" begin
+    mktempdir() do folder
+        demo = PlottingExample.demo(; output_dir = folder)
+        @test demo.pmeg.axes.data === demo.pheg.axes.data
+        @test demo.pmeg.axes.residual === demo.pheg.axes.residual
+        @test demo.pmeg.figure === demo.pheg.figure
+        @test demo.pmeg.axes.residual.ylabel[] == "Signed √ΔW"
+        @test demo.numeric.valid == [true, true, true, true, true, false]
+        @test filesize(joinpath(folder, "hetg-panels.pdf")) > 0
+        @test filesize(joinpath(folder, "rgs-gaps.png")) > 0
+    end
+end
