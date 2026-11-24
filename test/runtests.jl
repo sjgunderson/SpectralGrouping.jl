@@ -112,6 +112,7 @@ end
 end
 
 include("grid-matching.jl")
+include("multi-grid-wstat.jl")
 include("plotting.jl")
 include("detector-display.jl")
 include("plot-rendering.jl")

@@ -9,6 +9,12 @@ end
 
 SF.statistic_symbol(stat::_GridPoisson) = isnothing(stat.background) ? "C-stat" : "W-stat"
 
+struct _JointWStat <: SF.AbstractStatistic
+    by_observation::IdDict{Vector{Float64},_GridPoisson}
+end
+
+SF.statistic_symbol(::_JointWStat) = "W-stat"
+
 _has_background(data::JointDataset) = any(member -> !isnothing(member.background), data.members)
 _has_explicit_errors(data::AbstractGridDataset) = any(member -> member.explicit_errors, data.members)
 
@@ -42,6 +48,53 @@ end
 function grid_statistic(data::SummedDataset)
     return data.fractional || _has_explicit_errors(data) ?
         SF.ChiSquared() : _GridPoisson(data.counts, nothing, nothing)
+end
+
+"""
+    grid_statistic(joint1, joint2, rest...)
+
+Use one W-stat for a SpectralFitting problem with multiple prepared
+`JointDataset` objects. Each dataset must have raw on/off counts and select
+W-stat on its own. Each model/data pair keeps its incident grid and native
+likelihood bins. Bind shared source parameters in the fitting problem before
+creating its configuration.
+"""
+function grid_statistic(first::AbstractGridDataset, second::AbstractGridDataset, rest::AbstractGridDataset...)
+    by_observation = IdDict{Vector{Float64},_GridPoisson}()
+    for data in (first, second, rest...)
+        data isa JointDataset ||
+            throw(ArgumentError("multi-dataset W-stat requires prepared JointDataset inputs"))
+        haskey(by_observation, data.counts) &&
+            throw(ArgumentError("a dataset cannot be registered twice for multi-dataset W-stat"))
+        stat = grid_statistic(data)
+        stat isa _GridPoisson && !isnothing(stat.background) ||
+            throw(ArgumentError("multi-dataset W-stat requires measured backgrounds in every joint dataset"))
+        by_observation[data.counts] = stat
+    end
+    return _JointWStat(by_observation)
+end
+
+function SF.preferred_units(data::AbstractGridDataset, stat::_JointWStat)
+    member_stat = get(stat.by_observation, data.counts, nothing)
+    data isa JointDataset && !isnothing(member_stat) ||
+        throw(ArgumentError("register this joint dataset with grid_statistic before fitting"))
+    return SF.preferred_units(data, member_stat)
+end
+
+SF.preferred_units(::SF.AbstractDataset, ::_JointWStat) =
+    throw(ArgumentError("multi-dataset W-stat requires registered JointDataset inputs"))
+
+function SF.measure(stat::_JointWStat, first, second, variance)
+    # The optimizer and result APIs pass the observed vector on opposite sides.
+    left = get(stat.by_observation, first, nothing)
+    right = get(stat.by_observation, second, nothing)
+    if !isnothing(left) && !isnothing(right) && left !== right
+        throw(ArgumentError("W-stat received two different registered observation vectors"))
+    end
+    member_stat = isnothing(left) ? right : left
+    isnothing(member_stat) &&
+        throw(ArgumentError("W-stat requires a registered joint dataset's observed count vector"))
+    return SF.measure(member_stat, first, second, variance)
 end
 
 function SF.preferred_units(data::AbstractGridDataset, stat::SF.AbstractStatistic)
