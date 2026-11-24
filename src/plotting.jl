@@ -188,11 +188,11 @@ function _display_counts(member, background)
     background == :only && isnothing(off) &&
         return zeros(length(member.grid)), spzeros(length(member.grid), length(member.grid)), nothing
     isnothing(off) && return member.counts, member.covariance, member.model
-    scaled = off.alpha .* off.counts
+    scaled, covariance = _scaled_background(off)
     if background == :only
-        return scaled, off.alpha^2 * off.covariance, nothing
+        return scaled, covariance, nothing
     elseif background == :subtract
-        return member.counts - scaled, member.covariance + off.alpha^2 * off.covariance, member.model
+        return member.counts - scaled, member.covariance + covariance, member.model
     end
     model = isnothing(member.model) ? nothing : member.model + scaled
     return member.counts, member.covariance, model

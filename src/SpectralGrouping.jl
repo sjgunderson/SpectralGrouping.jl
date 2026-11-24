@@ -1,16 +1,20 @@
 module SpectralGrouping
 
 using LinearAlgebra: Symmetric, LowerTriangular, cholesky, diag, issuccess, ldiv!, mul!
-using SparseArrays: SparseMatrixCSC, nonzeros, nzrange, sparse, spdiagm, spzeros
+using SparseArrays: SparseMatrixCSC, nonzeros, nzrange, rowvals, sparse, spdiagm, spzeros
 import SpectralFitting as SF
+import FITSIO
 using SpectralFitting: SpectralUnits, @u_str
 
 export GroupingPlan, grouping_plan, group_sum, grouped_dataset
 export group_counts, group_width, group_snr, group_ogip
 export BinGrid, GridMatch, JointDataset, SummedDataset
 export match_dataset_grids, combine_datasets, overlap_projection, predict_counts, grid_statistic
+export with_channel_scalings
 export DetectorAlignment, detector_grid, align_detector_grids, rebin_detector_grid
 export PlotCurve, SpectrumPlot, plot_curves, plot_data, plot_counts, plot_fit, plot_unfold
+
+include("channel-scalings.jl")
 
 """
     GroupingPlan
@@ -49,7 +53,7 @@ function _channel_index(channels, label)
     return index
 end
 
-function _geometry(data::SF.SpectralData, rows)
+function _geometry(data::_DetectorData, rows)
     isempty(rows) && throw(ArgumentError("no noticed, good-quality source channels"))
     channels = data.spectrum.channels
     allunique(channels) || throw(ArgumentError("duplicate source channel labels"))
@@ -334,6 +338,12 @@ function grouped_dataset(data::SF.SpectralData{T}, plan::GroupingPlan) where {T}
         low, high, copy(data.domain), trues(n), data.user_data,
     )
 end
+
+_channel_grouping_error() =
+    throw(ArgumentError("keep channel-scaled data on native channels and use rebin for display"))
+
+grouping_plan(::_ChannelScaledData, args...; kwargs...) = _channel_grouping_error()
+grouped_dataset(::_ChannelScaledData, ::GroupingPlan) = _channel_grouping_error()
 
 """Return a dataset grouped to a minimum number of observed counts per bin."""
 group_counts(data::SF.SpectralData, minimum; kwargs...) =

@@ -10,7 +10,7 @@ struct _MemberResponse
     explicit_errors::Bool
     background::Union{Nothing,Vector{Float64}}
     background_variance::Union{Nothing,Vector{Float64}}
-    alpha::Float64
+    alpha::Union{Float64,Vector{Float64}}
     exposure::Float64
 end
 
@@ -88,11 +88,21 @@ function _count_variance(spectrum, rows, counts, factors)
     return variance, explicit || !iszero(sys)
 end
 
-function _effective_exposure(spectrum)
-    exposure = Float64(spectrum.exposure_time) * Float64(spectrum.area_scale)
+_every_scale(f, value::Real) = f(value)
+_every_scale(f, values::AbstractVector) = all(f, values)
+_row_exposure(value::Float64, row) = value
+_row_exposure(values::Vector{Float64}, row) = values[row]
+
+function _effective_exposure(data, spectrum, rows; allow_zero = false)
+    exposure = Float64(spectrum.exposure_time)
     isfinite(exposure) && exposure > 0 ||
-        throw(ArgumentError("effective exposure must be positive and finite"))
-    return exposure
+        throw(ArgumentError("exposure must be positive and finite"))
+    areas = _pha_scale(data, spectrum, rows, :area_scale)
+    effective = exposure .* areas
+    zero_allowed = allow_zero && data isa SF.SpectralData
+    _every_scale(x -> isfinite(x) && (x > 0 || zero_allowed && iszero(x)), effective) ||
+        throw(ArgumentError("invalid effective exposure from AREASCAL in a selected channel"))
+    return effective
 end
 
 function _background_observation(data, rows, widths, source_exposure; allow_zero = false)
@@ -104,13 +114,21 @@ function _background_observation(data, rows, widths, source_exposure; allow_zero
     wanted = data.spectrum.channels[rows]
     mapped = [get(index, channel, 0) for channel in wanted]
     all(>(0), mapped) || throw(ArgumentError("a selected source channel is missing from the background"))
+    if data isa _ChannelScaledData
+        length(bkg.quality) == length(bkg.channels) ||
+            throw(DimensionMismatch("background QUALITY and CHANNEL arrays differ in length"))
+        all(iszero, view(bkg.quality, mapped)) ||
+            throw(ArgumentError("a selected source channel has bad background QUALITY; mask it in the source before fitting or subtracting"))
+    end
     counts, factors = _in_counts(bkg, mapped, widths)
-    source_backscale = Float64(data.spectrum.background_scale)
-    background_backscale = Float64(bkg.background_scale)
-    all(x -> isfinite(x) && x > 0, (source_backscale, background_backscale)) ||
+    source_backscale = _pha_scale(data, data.spectrum, rows, :background_scale)
+    background_backscale = _pha_scale(data, bkg, mapped, :background_scale)
+    all(x -> _every_scale(v -> isfinite(v) && v > 0, x), (source_backscale, background_backscale)) ||
         throw(ArgumentError("source and background BACKSCAL must be finite and positive"))
-    scale = (source_exposure / _effective_exposure(bkg)) * (source_backscale / background_backscale)
-    isfinite(scale) && (scale > 0 || allow_zero && iszero(scale)) ||
+    background_exposure = _effective_exposure(data, bkg, mapped)
+    scale = (source_exposure ./ background_exposure) .* (source_backscale ./ background_backscale)
+    zero_allowed = allow_zero && data isa SF.SpectralData
+    _every_scale(x -> isfinite(x) && (x > 0 || zero_allowed && iszero(x)), scale) ||
         throw(ArgumentError("invalid source-to-background scaling"))
     return (; counts, factors, rows = mapped, scale)
 end
@@ -122,7 +140,7 @@ function _member_response(data, incident, projection, coordinate, selected, geom
     widths = Float64.(geometry.high[rows]) .- Float64.(geometry.low[rows])
     counts, factors = _in_counts(data.spectrum, rows, widths)
     variance, explicit = _count_variance(data.spectrum, rows, counts, factors)
-    exposure = _effective_exposure(data.spectrum)
+    exposure = _effective_exposure(data, data.spectrum, rows)
     off = _background_observation(data, rows, widths, exposure)
     background = isnothing(off) ? nothing : off.counts
     background_variance = if !isnothing(off)
@@ -132,11 +150,11 @@ function _member_response(data, incident, projection, coordinate, selected, geom
 
     matrix = convert(SparseMatrixCSC{Float64,Int}, data.response.matrix[geometry.response_rows[rows], :])
     area = isnothing(data.ancillary) ? nothing : data.ancillary.effective_area
-    values = nonzeros(matrix)
+    values, row_indices = nonzeros(matrix), rowvals(matrix)
     for j in axes(matrix, 2)
-        factor = isnothing(area) ? exposure : exposure * area[j]
+        arf_area = isnothing(area) ? 1.0 : area[j]
         for i in nzrange(matrix, j)
-            values[i] *= factor
+            values[i] *= arf_area * _row_exposure(exposure, row_indices[i])
         end
     end
     all(isfinite, values) || throw(ArgumentError("response entries must be finite after exposure and ARF scaling"))
@@ -154,6 +172,7 @@ function _matched_members(match, plans, coordinate)
             selected = _selected_rows(data, nothing)
             geometry = _geometry(data, selected)
         else
+            data isa _ChannelScaledData && _channel_grouping_error()
             grouped = _group_geometry(data, plan)
             selected, geometry = grouped.active_rows, grouped.geometry
         end
