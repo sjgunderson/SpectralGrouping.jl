@@ -18,13 +18,17 @@ export PlotCurve, SpectrumPlot, plot_curves, plot_data, plot_counts, plot_fit, p
 Detector-channel groups in increasing energy order. Each range in `groups`
 indexes the original spectrum in its original row order. `met_target` marks
 groups meeting the requested counts, width, or S/N target, and is all true for
-file grouping. Construct plans with `grouping_plan`.
+file grouping. `target_width` records the requested channel count for a
+`:width` plan. Construct plans with `grouping_plan`.
 """
 struct GroupingPlan
     channels::Vector{Int}
     groups::Vector{UnitRange{Int}}
     met_target::BitVector
+    target_width::Union{Nothing,Int}
 end
+
+GroupingPlan(channels, groups, met_target) = GroupingPlan(channels, groups, met_target, nothing)
 
 function _selected_rows(data::SF.SpectralData, mask)
     n = length(data.spectrum.channels)
@@ -203,7 +207,8 @@ function grouping_plan(
         reverse!(groups)
         reverse!(met)
     end
-    return GroupingPlan(copy(channels), groups, met)
+    target_width = method == :width ? Int(min(target, typemax(Int))) : nothing
+    return GroupingPlan(copy(channels), groups, met, target_width)
 end
 
 """

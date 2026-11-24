@@ -44,6 +44,22 @@ end
     end
 end
 
+@testset "One error bar per pooled bin from a width-grouped joint fit" begin
+    rgs1, rgs2, wave = rgs_width_pair(; n = 60, good1 = [1:20; 41:60], good2 = 21:60)
+    matched = match_dataset_grids(rgs1, rgs2)
+    plans = [grouping_plan(d, :width, 20) for d in (rgs1, rgs2)]
+    joint = combine_datasets(matched; mode = :joint, groupings = plans)
+    opts = (; combine = :sum, xaxis = :wavelength, background = :include)
+
+    plotted = plot_data(joint; opts...)
+    curve = only(plotted.curves.data)
+    @test isapprox(curve.grid.low, wave[[1, 21, 41]])
+    @test isapprox(curve.grid.high, wave[[21, 41, 61]])
+    bars = last(only(plotted.artists.data)).val_low_high[]
+    @test length(bars) == 3
+    @test isapprox([bar[1] for bar in bars], (wave[[1, 21, 41]] .+ wave[[21, 41, 61]]) ./ 2)
+end
+
 include(joinpath(@__DIR__, "..", "docs", "examples", "plotting.jl"))
 
 @testset "Runnable plotting guide" begin

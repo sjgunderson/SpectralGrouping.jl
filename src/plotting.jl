@@ -348,20 +348,22 @@ function _plot_labels(opts, statistic, res, fractional)
 end
 
 """
-    plot_curves(input; kind=:data, xaxis=:energy, combine=:none, rebin=1, ...)
+    plot_curves(input; kind=:data, xaxis=:energy, combine=:none, rebin=nothing, ...)
 
 Prepare detector-bin curves without loading a graphics backend. Pass a
 SpectralData, GridMatch, prepared joint/summed dataset, or SpectralFitting fit
 result. Use `kind=:counts` for counts per bin and `kind=:unfold` for
 response-corrected flux. Pass `model` to overlay a source. For individual
 native plots, `groupings` applies detector plans. For pooled plots, `rebin`
-groups consecutive bins of the common detector grid. Fit results supply
-parameter values.
+groups consecutive bins of the common detector grid. With `rebin=nothing`,
+a pooled joint dataset or fit result inherits a fixed width if every member
+used the same `:width` plan target. Otherwise the default is one bin. Fit
+results supply parameter values.
 """
 function plot_curves(
     input; kind::Symbol = :data, xaxis::Symbol = :energy, normalization::Symbol = :rate_density,
     combine::Symbol = :none, matching_coordinate = nothing, reference = nothing,
-    groupings = nothing, rebin::Integer = 1, background::Symbol = :subtract,
+    groupings = nothing, rebin::Union{Nothing,Integer} = nothing, background::Symbol = :subtract,
     model = nothing, index::Integer = 1, res::Integer = 0, residual_stat::Symbol = :auto,
     show_model::Bool = true, model_display::Symbol = :convolved, flux_unit::Symbol = :photons,
     power = nothing, power_scale::Symbol = :arithmetic, scale::Real = 1.0, offset::Real = 0.0,
@@ -377,7 +379,7 @@ function plot_curves(
     flux_unit in (:photons, :ergs) || throw(ArgumentError("flux_unit must be :photons or :ergs"))
     power_scale in (:arithmetic, :geometric, :powerlaw) || throw(ArgumentError("unknown power weighting"))
     0 <= res <= 6 || throw(ArgumentError("res must be between 0 and 6"))
-    rebin > 0 || throw(ArgumentError("rebin must be positive"))
+    isnothing(rebin) || rebin > 0 || throw(ArgumentError("rebin must be positive"))
     isfinite(scale) && scale > 0 && isfinite(offset) ||
         throw(ArgumentError("scale must be positive and finite, and offset must be finite"))
     kind == :counts && (normalization = :counts)
@@ -394,6 +396,9 @@ function plot_curves(
     )
     res > 0 && isnothing(source_model) && throw(ArgumentError("residuals require a source model or a fit result"))
     pooling = combine != :none || data isa SummedDataset
+    if isnothing(rebin)
+        rebin = pooling && data isa JointDataset ? data.display_rebin : 1
+    end
     inputs = _read_plot_inputs(data, source_model, extension, fit_stat; groupings, pooling,
                                reference, unfold = unfolding, read_background = background != :include)
     members = inputs.members
