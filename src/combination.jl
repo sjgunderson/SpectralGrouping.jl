@@ -27,13 +27,14 @@ struct JointDataset <: AbstractGridDataset
     reference::Int
     detector_target::BinGrid
     detector_coordinate::Symbol
-    display_rebin::Int
+    native_members::Union{Nothing,Vector{_MemberResponse}}
+    reference_detector_target::Bool
 end
 
 function JointDataset(model_edges, members, member_ranges, counts, variance, name,
                       detector_grids, reference, detector_target, detector_coordinate)
     return JointDataset(model_edges, members, member_ranges, counts, variance, name,
-                        detector_grids, reference, detector_target, detector_coordinate, 1)
+                        detector_grids, reference, detector_target, detector_coordinate, nothing, false)
 end
 
 JointDataset(model_edges, members, member_ranges, counts, variance, name, detector_grids, reference) =
@@ -224,9 +225,14 @@ function _member_response(data, incident, projection, coordinate, selected, geom
                            Float64(data.spectrum.exposure_time))
 end
 
-function _matched_members(match, plans, coordinate)
+function _matched_members(match, plans, coordinate; ungrouped = nothing)
     members = _MemberResponse[]
-    for (data, native, projection, plan) in zip(match.datasets, match.native_grids, match.projections, plans)
+    for (i, (data, native, projection, plan)) in
+            enumerate(zip(match.datasets, match.native_grids, match.projections, plans))
+        if !isnothing(ungrouped) && isnothing(plan)
+            push!(members, ungrouped[i])
+            continue
+        end
         current = _incident_grid(data)
         current.low == native.low && current.high == native.high ||
             throw(ArgumentError("incident response boundaries changed; match the grids again"))
@@ -250,16 +256,21 @@ function _joint_dataset(match, plans, name)
                               match.reference, match.detector_grids, match.detector_target,
                               match.detector_coordinate)
     members = _matched_members(grouped_match, ntuple(_ -> nothing, length(plans)), :energy)
+    # Retain the selected detector channels for pooling the data and model
+    # directly onto display edges. The fit continues to use members.
+    native_members = if any(!isnothing, plans)
+        _matched_members(match, plans, :energy; ungrouped = members)
+    end
     offsets = cumsum(vcat(0, [length(member.counts) for member in members]))
     ranges = [(offsets[i] + 1):offsets[i + 1] for i in eachindex(members)]
     counts = reduce(vcat, (member.counts for member in members))
     variance = reduce(vcat, (member.variance for member in members))
-    width = isnothing(first(plans)) ? nothing : first(plans).target_width
-    display_rebin = !isnothing(width) &&
-        all(plan -> !isnothing(plan) && plan.target_width == width, plans) ? width : 1
+    reference_detector_target = match.detector_target === match.detector_grids[match.reference] &&
+        match.detector_coordinate == :energy
     return JointDataset(copy(match.model_edges), members, ranges, counts, variance, name,
                         map(_bin_grid, match.detector_grids), match.reference,
-                        _bin_grid(match.detector_target), match.detector_coordinate, display_rebin)
+                        _bin_grid(match.detector_target), match.detector_coordinate, native_members,
+                        reference_detector_target)
 end
 
 _raw_counts(values) = all(x -> x >= 0 && abs(x - round(x)) <= EDGE_RTOL * max(1.0, abs(x)), values)

@@ -100,7 +100,10 @@ end
         grouped_fit = SF.finalize_result(grouped_cfg, [0.075], nothing)
         grouped_plot = plot_curves(grouped_fit; kind = :counts, res = 2, residual_stat = :wstat)
         @test isapprox(only(grouped_plot.residuals).y, [-only(grouped_fit.stats)])
-        for curves in (grouped_plot, plot_curves(grouped; kind = :counts),
+        pooled_fit = plot_curves(grouped_fit; kind = :counts, combine = :sum, res = 5,
+                                 residual_stat = :wstat)
+        @test isapprox(only(pooled_fit.residuals).y, [-only(grouped_fit.stats)])
+        for curves in (grouped_plot, pooled_fit, plot_curves(grouped; kind = :counts),
                        plot_curves(scaled; kind = :counts, groupings = plan))
             @test isapprox(only(curves.data).y, [35])
             @test isapprox(only(curves.data).error .^ 2, [53.5])

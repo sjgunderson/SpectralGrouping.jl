@@ -76,8 +76,8 @@ individual = plot_counts((rgs1, rgs2); combine = :none, xaxis = :wavelength)
 For a pooled raw collection, `GridMatch`, or `JointDataset` (including a fit
 result slice), the chosen reference supplies its original RMF detector
 channel boundaries by default. A raw collection defaults to observation 1.
-A match or joint dataset reuses its resolved detector target. `reference`
-on the plot selects that observation's original grid. A prepared
+A match or joint dataset reuses an explicitly supplied detector target.
+`reference` on the plot selects a different reference. A prepared
 `SummedDataset` uses its fitted grid.
 
 Only good-quality, noticed channels contribute. If an RGS1 channel is bad
@@ -105,16 +105,19 @@ and sensitivity, with counts and sensitivity summed before unfolding.
 A uniform 0.010 Å target gives 0.040 Å full-width groups for `rebin=4`.
 
 Use native `groupings` for individual plots or when preparing a joint fit.
-A pooled plot from a joint dataset or fit that used the same `:width` target
-for every observation defaults to that width on the shared display grid.
-For example, a joint fit built with 20-channel width plans shows one error
-bar at the center of each displayed group. Pass `rebin` explicitly to
-override the width, or to select a shared width when the fit plans differ
-or use count or S/N targets. `rebin=1` selects the ungrouped display target.
-A plot from a grouped fit projects the fitted bins that are available.
-This projection assumes constant density within each fitted bin and cannot
-recover its original measurements. `plot_curves` exposes bin edges,
-validity, errors, and covariance without a graphics backend.
+When the reference has a fit grouping and the plot omits `rebin`, the pooled
+plot uses that reference's exact grouped edges. This follows the grouped
+reference workflow in [fancy_plotting](https://github.com/sjgunderson/fancy_plotting/blob/main/src/fancy_plotting/plotting.py).
+A detector target supplied explicitly to matching takes precedence. The
+joint dataset retains the original selected channels and projects counts,
+scaled background, covariance, and folded model to the plot grid.
+
+Use `rebin=N` for the ISIS matched-grid workflow, which groups the shared
+detector lattice and retains measurements from other detectors across a
+masked reference interval. `rebin=1` selects the ungrouped shared target.
+With a grouped fit, use `combine=:none, rebin=1` for residuals on the fit
+bins. `plot_curves` exposes bin edges, validity, errors, and covariance
+without a graphics backend.
 
 ```julia
 target = detector_grid(rgs; coordinate = :wavelength)

@@ -53,11 +53,13 @@ end
 
     plotted = plot_data(joint; opts...)
     curve = only(plotted.curves.data)
-    @test isapprox(curve.grid.low, wave[[1, 21, 41]])
-    @test isapprox(curve.grid.high, wave[[21, 41, 61]])
+    @test isapprox(curve.grid.low, wave[[1, 41]])
+    @test isapprox(curve.grid.high, wave[[21, 61]])
     bars = last(only(plotted.artists.data)).val_low_high[]
-    @test length(bars) == 3
-    @test isapprox([bar[1] for bar in bars], (wave[[1, 21, 41]] .+ wave[[21, 41, 61]]) ./ 2)
+    @test length(bars) == 2
+    @test isapprox([bar[1] for bar in bars], (wave[[1, 41]] .+ wave[[21, 61]]) ./ 2)
+    shared = plot_data(joint; opts..., rebin = 20)
+    @test length(last(only(shared.artists.data)).val_low_high[]) == 3
 end
 
 include(joinpath(@__DIR__, "..", "docs", "examples", "plotting.jl"))
