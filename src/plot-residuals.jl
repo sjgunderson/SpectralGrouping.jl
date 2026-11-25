@@ -76,31 +76,66 @@ function _append_off_regions!(counts, scales, background::_PlotBackground, bin)
 end
 
 function _append_off_regions!(counts, scales, background::_ChannelPlotBackground, bin)
+    # Fractional mappings are handled by _projected_wstat before pooling.
     overlap = background.fit_overlap
-    rows, weights = rowvals(overlap), nonzeros(overlap)
-    entries = nzrange(overlap, bin)
-    isempty(entries) && return nothing
-    first_scale = background.alpha[rows[first(entries)]]
-    for entry in entries
+    rows = rowvals(overlap)
+    for entry in nzrange(overlap, bin)
         row = rows[entry]
-        scale = background.alpha[row]
-        scale == first_scale && weights[entry] == 1 || _channel_residual_error()
         off = background.off_counts[row]
         off >= 0 || throw(ArgumentError("W-stat requires raw nonnegative off-region counts"))
-        push!(counts, weights[entry] * off)
-        push!(scales, scale)
+        push!(counts, off)
+        push!(scales, background.alpha[row])
     end
     return nothing
 end
 
-_channel_residual_error() =
-    throw(ArgumentError("channel-scaled W-stat residuals require whole on/off fit bins with a single scale per spectrum and displayed bin; use combine=:none, rebin=1 for fit-bin W-stat residuals, or residual_stat=:chi2 for display bins"))
+function _fit_bin_wstat(member)
+    on, source, background = member.counts, member.model, member.background
+    any(<(0), on) && throw(ArgumentError("Poisson residuals require raw nonnegative on-region counts"))
+    if isnothing(background) || (background isa _PlotBackground && iszero(background.alpha))
+        return _poisson_deviance.(on, source), on .- source
+    end
+    off = background isa _ChannelPlotBackground ? background.off_counts : background.counts
+    any(<(0), off) && throw(ArgumentError("W-stat requires raw nonnegative off-region counts"))
+    alpha = background.alpha
+    return _profile_deviance.(on, source, off, alpha), on .- source .- alpha .* off
+end
 
-function _residual_curve(members, xaxis, mode, statistic, background)
+function _projected_wstat(fit_members, target, covered, signed_squared)
+    deviance = zeros(length(target.grid))
+    difference = zeros(length(target.grid))
+    for member in fit_members
+        score, excess = _fit_bin_wstat(member)
+        grid, order = _convert_plot_grid(member.grid, member.coordinate, target.coordinate)
+        projection = overlap_projection(grid, target.grid)
+        # Project the fitted contributions before applying the sign or square root.
+        deviance .+= projection * score[order]
+        difference .+= projection * excess[order]
+    end
+    values = fill(NaN, length(deviance))
+    for i in eachindex(values)
+        covered[i] && isfinite(deviance[i]) || continue
+        magnitude = max(0.0, deviance[i])
+        values[i] = sign(difference[i]) * (signed_squared ? magnitude : sqrt(magnitude))
+    end
+    return values
+end
+
+function _residual_curve(members, fit_members, xaxis, mode, statistic, background)
     first_member = first(members)
     grid, order = _convert_plot_grid(first_member.grid, first_member.coordinate, xaxis)
     n = length(grid)
     covered = _display_coverage(members, :include)
+    ratio = mod1(mode, 3) == 3
+    signed_squared = mod1(mode, 3) == 2
+    fractional = any(m -> m.fractional, members)
+    if !ratio && statistic == :wstat && fractional &&
+            any(m -> m.background isa _ChannelPlotBackground, members)
+        values = _projected_wstat(fit_members, first_member, covered, signed_squared)[order]
+        return PlotCurve(grid, values, nothing, nothing, BitVector(isfinite.(values)),
+                         _plot_label(members), fractional, nothing)
+    end
+
     observed = reduce(+, (m.counts for m in members))
     source = reduce(+, (m.model for m in members))
     variance = reduce(+, (diag(m.covariance) for m in members))
@@ -112,13 +147,6 @@ function _residual_curve(members, xaxis, mode, statistic, background)
             estimate .+= scaled
             variance .+= diag(covariance)
         end
-    end
-    ratio = mod1(mode, 3) == 3
-    signed_squared = mod1(mode, 3) == 2
-    fractional = any(m -> m.fractional, members)
-    if !ratio && statistic == :wstat && fractional &&
-            any(m -> m.background isa _ChannelPlotBackground, members)
-        _channel_residual_error()
     end
     if !ratio && statistic in (:cash, :wstat) && any(<(0), observed)
         throw(ArgumentError("Poisson residuals require raw nonnegative on-region counts"))

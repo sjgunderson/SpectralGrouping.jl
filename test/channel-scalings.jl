@@ -133,7 +133,8 @@ end
 
         native = plot_curves(fit; kind = :counts, res = 2, residual_stat = :wstat)
         @test isapprox(sum(abs, only(native.residuals).y), only(fit.stats))
-        @test_throws ArgumentError plot_curves(fit; combine = :sum, rebin = 2, res = 4)
+        whole = plot_curves(fit; combine = :sum, rebin = 2, res = 4)
+        @test isapprox(only(whole.residuals).y, [-sqrt(516.1393808716676)])
         @test only(plot_curves(fit; combine = :sum, rebin = 2, res = 4,
                                residual_stat = :chi2).residuals).valid == [true]
         ratio = plot_curves(fit; combine = :sum, rebin = 2, res = 6)
@@ -144,8 +145,38 @@ end
                                        matching_coordinate = :energy).data)
         @test isapprox(fractional.y, [10, 10, 15])
         @test isapprox(Matrix(fractional.covariance), [7.75 7.75 0; 7.75 7.75 0; 0 0 22.5])
-        @test_throws ArgumentError plot_curves(offset; combine = :sum, model, res = 4,
-                                               residual_stat = :wstat, matching_coordinate = :energy)
+        wstat_plot = (; combine = :exposure, residual_stat = :wstat)
+        offset_joint = combine_datasets(offset)
+        fit_deviance = -only(native.residuals).y
+        wavelength_split = plot_curves(offset_joint; wstat_plot..., model, res = 4)
+        @test isapprox(only(wavelength_split.residuals).y,
+                       -sqrt.(fit_deviance[[1, 1, 2]] .* [2 / 3, 1 / 3, 1]))
+        split = plot_curves(offset_joint; wstat_plot..., model, res = 4,
+                            matching_coordinate = :energy)
+        projected = fit_deviance[[1, 1, 2]] .* [0.5, 0.5, 1.0]
+        @test isapprox(only(split.residuals).y, -sqrt.(projected))
+        @test only(split.residuals).valid == trues(3)
+        @test split.residual_label == "Signed √ΔW (rebinned diagnostic)"
+        rebinned = plot_curves(offset; wstat_plot..., model, res = 5, rebin = 2,
+                              matching_coordinate = :energy)
+        @test isapprox(only(rebinned.residuals).y, -fit_deviance)
+
+        grouped_offset = combine_datasets(offset; groupings = (plan,))
+        grouped_split = plot_curves(grouped_offset; wstat_plot..., rebin = 1, res = 5,
+                                    matching_coordinate = :energy,
+                                    model = GridTestSource(SF.FitParam(0.075)))
+        @test isapprox(only(grouped_split.residuals).y, -only(grouped_fit.stats) .* [0.25, 0.25, 0.5])
+
+        mixed_offset = match_dataset_grids(scaled, data; detector_grid = [1.0, 1.5, 2.0, 3.0, 4.0])
+        mixed_joint = combine_datasets(mixed_offset)
+        mixed_split = plot_curves(mixed_joint; wstat_plot..., model, res = 5,
+                                  xaxis = :wavelength, matching_coordinate = :energy)
+        mixed_residual = only(mixed_split.residuals)
+        @test mixed_residual.valid == [false, true, true, true]
+        @test isapprox(mixed_residual.y[2:4],
+                       -[projected[3] + 459.34039959359666,
+                         projected[2] + 297.8289000146328 / 2,
+                         projected[1] + 297.8289000146328 / 2])
 
         coupled = deepcopy(data)
         coupled.response = SF.ResponseMatrix(sparse([0.5 1.0; 1.0 0.25]), [22, 21],

@@ -240,9 +240,14 @@ W-stat, and defaults to χ² for a current model. Use `:chi2`, `:cash`, or
 `:wstat` for an explicit diagnostic. W-stat uses the measured off counts and
 each member's scale. Residuals are computed in counts before display
 normalization. Coadded or rebinned residuals are display diagnostics.
-Fractional projections in particular do not define independent Poisson
-measurements. To inspect per-order W-stat residuals on the selected
-likelihood bins, use the unpooled, unreduced detector grid.
+When display bins contain whole W-stat bins, the pooled diagnostic retains
+separate off counts for different scales. If alignment uses fractional
+overlaps and any contributing spectrum has channel-dependent scaling, each
+display bin receives the overlap-weighted fit-bin deviances. Its sign comes
+from the projected on counts minus the scaled off counts and folded source
+counts, using the fit-bin scales. The residual axis labels this as a
+rebinned diagnostic. To inspect W-stat residuals on the original likelihood
+bins, use `combine=:none, rebin=1`.
 
 ```julia
 per_order = plot_fit(result; index = 1, combine = :none, res = 1, rebin = 1,

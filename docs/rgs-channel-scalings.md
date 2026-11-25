@@ -113,5 +113,8 @@ For a PN, MOS, and RGS fit, create a new fitting problem with the prepared
 
 Use `SG.plot_fit(result; index=3, combine=:none, rebin=1, res=1,
 residual_stat=:wstat)` for residuals on the RGS fit bins if RGS is the third
-fit slice. For additional display rebinning that mixes different fit
-`alpha` values or splits fit bins, use `res=0` or `residual_stat=:chi2`.
+fit slice. For a combined RGS display, keep `combine=:exposure` and
+`residual_stat=:wstat` with `res=4` (signed square root) or `res=5`
+(signed deviance). The [plotting guide](plotting.md#residuals) describes
+how the diagnostic handles different background scales and fractional
+overlaps.
