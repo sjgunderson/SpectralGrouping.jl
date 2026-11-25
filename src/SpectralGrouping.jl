@@ -1,6 +1,6 @@
 module SpectralGrouping
 
-using LinearAlgebra: Symmetric, LowerTriangular, cholesky, diag, issuccess, ldiv!, mul!
+using LinearAlgebra: Symmetric, LowerTriangular, cholesky, diag, dot, issuccess, ldiv!, mul!
 using SparseArrays: SparseMatrixCSC, nonzeros, nzrange, rowvals, sparse, spdiagm, spzeros
 import SpectralFitting as SF
 import FITSIO
@@ -110,8 +110,9 @@ end
 """
     grouping_plan(data, method, [target]; mask=nothing, max_channels=nothing, errors=nothing)
 
-Build a grouping plan for a SpectralFitting `SpectralData` on its detector
-channel grid. Use `:counts` for a minimum number of observed counts, `:width`
+Build a grouping plan on the detector grid of a SpectralFitting `SpectralData`
+or a spectrum returned by `with_channel_scalings`.
+Use `:counts` for a minimum number of observed counts, `:width`
 for a fixed number of channels, `:snr` for a minimum signal-to-noise ratio, or
 `:ogip` to apply the source file's GROUPING flags.
 
@@ -123,7 +124,7 @@ noise, and `errors` can supply independent one-sigma errors in the spectrum's
 current units.
 """
 function grouping_plan(
-    data::SF.SpectralData, method::Symbol, target = nothing;
+    data::_DetectorData, method::Symbol, target = nothing;
     mask::Union{Nothing, AbstractVector{Bool}} = nothing,
     max_channels::Union{Nothing, Integer} = nothing,
     errors::Union{Nothing, AbstractVector{<:Real}} = nothing,
@@ -274,7 +275,7 @@ function _group_spectrum(
     )
 end
 
-function _group_geometry(data::SF.SpectralData, plan::GroupingPlan)
+function _group_geometry(data::_DetectorData, plan::GroupingPlan)
     channels = data.spectrum.channels
     channels == plan.channels || throw(ArgumentError("plan was built for a different set of source channels"))
     groups = plan.groups
@@ -297,16 +298,36 @@ function _group_geometry(data::SF.SpectralData, plan::GroupingPlan)
     return (; active_rows, geometry, low, high)
 end
 
+function _background_rows(data, rows)
+    background = data.background
+    length(background.channels) == length(background.data) ||
+        throw(DimensionMismatch("background channels and data differ in length"))
+    index = _channel_index(background.channels, "background")
+    mapped = [get(index, data.spectrum.channels[row], 0) for row in rows]
+    all(>(0), mapped) ||
+        throw(ArgumentError("a selected source channel is missing from the background"))
+    return mapped
+end
+
 """
     grouped_dataset(data, plan)
 
 Return a fresh SpectralFitting dataset with the plan applied to the source,
 background, and response rows. The incident model grid and ARF are carried
 through. The output's energy_low and energy_high arrays retain detector gaps.
+For a channel-scaled input, return a fresh calibrated dataset with the native
+response factors applied before summing the rows.
 """
-function grouped_dataset(data::SF.SpectralData{T}, plan::GroupingPlan) where {T}
+function grouped_dataset(data::SF.SpectralData, plan::GroupingPlan)
+    grouped = _group_geometry(data, plan)
+    mapped = isnothing(data.background) ? nothing : _background_rows(data, grouped.active_rows)
+    return _grouped_spectral_data(data, plan, grouped, mapped)
+end
+
+function _grouped_spectral_data(data::SF.SpectralData{T}, plan, grouped, mapped;
+                                response_weights = nothing) where {T}
     channels, groups = data.spectrum.channels, plan.groups
-    (; active_rows, geometry, low, high) = _group_geometry(data, plan)
+    (; active_rows, geometry, low, high) = grouped
     n = length(groups)
     output_rows = Int[]
     response_rows = Int[]
@@ -315,22 +336,16 @@ function grouped_dataset(data::SF.SpectralData{T}, plan::GroupingPlan) where {T}
         push!(response_rows, geometry.response_rows[row])
     end
     response = data.response
-    projection = sparse(output_rows, response_rows, ones(T, length(active_rows)), n, size(response.matrix, 1))
+    weights = isnothing(response_weights) ? ones(T, length(active_rows)) : T.(response_weights)
+    projection = sparse(output_rows, response_rows, weights, n, size(response.matrix, 1))
     grouped_response = SF.ResponseMatrix(
         projection * response.matrix, collect(1:n), copy(low), copy(high),
         copy(response.bins_low), copy(response.bins_high),
     )
     spectrum = _group_spectrum(data.spectrum, groups, eachindex(channels), geometry, low, high)
-    background = if isnothing(data.background)
-        nothing
-    else
-        index = _channel_index(data.background.channels, "background")
+    background = if !isnothing(mapped)
         background_rows = zeros(Int, length(channels))
-        for row in active_rows
-            channel = channels[row]
-            background_rows[row] = get(index, channel, 0)
-            background_rows[row] > 0 || throw(ArgumentError("source channel $channel is missing from the background"))
-        end
+        background_rows[active_rows] = mapped
         _group_spectrum(data.background, groups, background_rows, geometry, low, high)
     end
     return typeof(data)(
@@ -339,26 +354,20 @@ function grouped_dataset(data::SF.SpectralData{T}, plan::GroupingPlan) where {T}
     )
 end
 
-_channel_grouping_error() =
-    throw(ArgumentError("channel-scaled fits use native channels; set rebin=N in plot_data or plot_counts for display grouping"))
-
-grouping_plan(::_ChannelScaledData, args...; kwargs...) = _channel_grouping_error()
-grouped_dataset(::_ChannelScaledData, ::GroupingPlan) = _channel_grouping_error()
-
 """Return a dataset grouped to a minimum number of observed counts per bin."""
-group_counts(data::SF.SpectralData, minimum; kwargs...) =
+group_counts(data::_DetectorData, minimum; kwargs...) =
     grouped_dataset(data, grouping_plan(data, :counts, minimum; kwargs...))
 
 """Return a dataset grouped into bins of at most `width` detector channels."""
-group_width(data::SF.SpectralData, width; kwargs...) =
+group_width(data::_DetectorData, width; kwargs...) =
     grouped_dataset(data, grouping_plan(data, :width, width; kwargs...))
 
 """Return a dataset grouped to a minimum signal-to-noise ratio per bin."""
-group_snr(data::SF.SpectralData, minimum; kwargs...) =
+group_snr(data::_DetectorData, minimum; kwargs...) =
     grouped_dataset(data, grouping_plan(data, :snr, minimum; kwargs...))
 
 """Return a dataset grouped using the original source's OGIP GROUPING flags."""
-group_ogip(data::SF.SpectralData; kwargs...) =
+group_ogip(data::_DetectorData; kwargs...) =
     grouped_dataset(data, grouping_plan(data, :ogip; kwargs...))
 
 include("grids.jl")

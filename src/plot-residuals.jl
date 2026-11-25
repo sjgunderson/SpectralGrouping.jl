@@ -76,7 +76,7 @@ function _append_off_regions!(counts, scales, background::_PlotBackground, bin)
 end
 
 function _append_off_regions!(counts, scales, background::_ChannelPlotBackground, bin)
-    overlap = background.native_overlap
+    overlap = background.fit_overlap
     rows, weights = rowvals(overlap), nonzeros(overlap)
     entries = nzrange(overlap, bin)
     isempty(entries) && return nothing
@@ -85,7 +85,7 @@ function _append_off_regions!(counts, scales, background::_ChannelPlotBackground
         row = rows[entry]
         scale = background.alpha[row]
         scale == first_scale && weights[entry] == 1 || _channel_residual_error()
-        off = background.native_counts[row]
+        off = background.off_counts[row]
         off >= 0 || throw(ArgumentError("W-stat requires raw nonnegative off-region counts"))
         push!(counts, weights[entry] * off)
         push!(scales, scale)
@@ -94,7 +94,7 @@ function _append_off_regions!(counts, scales, background::_ChannelPlotBackground
 end
 
 _channel_residual_error() =
-    throw(ArgumentError("channel-scaled W-stat residuals require native on/off bins when scaling varies or counts are split; use combine=:none, rebin=1 for native W-stat residuals, or residual_stat=:chi2 for display bins"))
+    throw(ArgumentError("channel-scaled W-stat residuals require whole on/off fit bins with a single scale per spectrum and displayed bin; use combine=:none, rebin=1 for fit-bin W-stat residuals, or residual_stat=:chi2 for display bins"))
 
 function _residual_curve(members, xaxis, mode, statistic, background)
     first_member = first(members)
@@ -157,7 +157,8 @@ function _residual_curve(members, xaxis, mode, statistic, background)
             deviance = isempty(off_counts) ? _poisson_deviance(on, signal + off) :
                 _pooled_profile(on, signal, off_counts, scales)
             if isfinite(deviance)
-                signed = sign(on - signal - off)
+                estimated_off = isempty(off_counts) ? off : dot(scales, off_counts)
+                signed = sign(on - signal - estimated_off)
                 values[i] = signed * (signed_squared ? deviance : sqrt(max(0.0, deviance)))
             end
         end

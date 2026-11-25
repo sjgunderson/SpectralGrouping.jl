@@ -7,17 +7,19 @@ end
 struct _ChannelPlotBackground
     counts::Vector{Float64}
     covariance::SparseMatrixCSC{Float64,Int}
-    native_counts::Vector{Float64}
+    off_counts::Vector{Float64}
     alpha::Vector{Float64}
-    # Columns map displayed bins back to their contributing native channels.
-    native_overlap::SparseMatrixCSC{Float64,Int}
+    # Columns map displayed bins to the contributing W-stat bins.
+    fit_overlap::SparseMatrixCSC{Float64,Int}
 end
 
-_plot_background(counts, variance, alpha::Float64) =
+_plot_background(counts, variance, alpha::Float64, ::Nothing = nothing) =
     _PlotBackground(copy(counts), spdiagm(0 => variance), alpha)
 
-function _plot_background(counts, variance, alpha::Vector{Float64})
-    return _ChannelPlotBackground(alpha .* counts, spdiagm(0 => alpha.^2 .* variance),
+function _plot_background(counts, variance, alpha::Vector{Float64}, display = nothing)
+    scaled, scaled_variance = isnothing(display) ?
+        (alpha .* counts, alpha.^2 .* variance) : (display.counts, display.variance)
+    return _ChannelPlotBackground(scaled, spdiagm(0 => scaled_variance),
                                   copy(counts), copy(alpha), spdiagm(0 => ones(length(counts))))
 end
 
@@ -31,15 +33,15 @@ end
 
 function _move_plot_background(off::_ChannelPlotBackground, transform)
     return _ChannelPlotBackground(transform * off.counts, transform * off.covariance * transpose(transform),
-                                  off.native_counts, off.alpha, off.native_overlap * transpose(transform))
+                                  off.off_counts, off.alpha, off.fit_overlap * transpose(transform))
 end
 
 _reorder_plot_background(off::_PlotBackground, order) =
     _PlotBackground(off.counts[order], off.covariance[order, order], off.alpha)
 
 _reorder_plot_background(off::_ChannelPlotBackground, order) =
-    _ChannelPlotBackground(off.counts[order], off.covariance[order, order], off.native_counts,
-                           off.alpha, off.native_overlap[:, order])
+    _ChannelPlotBackground(off.counts[order], off.covariance[order, order], off.off_counts,
+                           off.alpha, off.fit_overlap[:, order])
 
 """
 One observation on a detector grid. `counts` and `covariance` describe the
@@ -196,7 +198,7 @@ function _read_plot_member(data, rows, geometry; unfold, read_background, model 
         off = _background_observation(data, rows, grid.high .- grid.low,
                                       exposure; allow_zero = true)
         var, _ = _count_variance(data.background, off.rows, off.counts, off.factors)
-        _plot_background(off.counts, var, off.scale)
+        _plot_background(off.counts, var, off.scale, _background_display(data, rows))
     end
     weights = unfold ? _unfold_weights(data, rows, geometry.response_rows[rows]) : nothing
     label = string(SF.make_label(data))
@@ -216,7 +218,8 @@ function _read_plot_member(member::_MemberResponse, coordinate, flux, label; unf
     model = isnothing(flux) ? nothing : member.response * _native_flux(member, flux)
     weights = unfold ? member.response * _wavelength_widths(member.incident) : nothing
     background = if !isnothing(member.background)
-        _plot_background(member.background, member.background_variance, member.alpha)
+        _plot_background(member.background, member.background_variance, member.alpha,
+                         member.background_display)
     end
     return AlignedDetectorSpectrum(member.grid, coordinate, copy(member.counts), spdiagm(0 => member.variance),
                                    background, model, weights, ones(length(member.grid)), false, member.exposure, label)

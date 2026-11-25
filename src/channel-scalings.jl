@@ -1,13 +1,27 @@
+struct _PHAScale
+    values::Vector{Float64}
+    low::Vector{Float64}
+    high::Vector{Float64}
+end
+
+_PHAScale(values) = _PHAScale(values, values, values)
+
 struct _PHAScalings
     channels::Vector{Int}
-    area_scale::Vector{Float64}
-    background_scale::Vector{Float64}
+    area_scale::_PHAScale
+    background_scale::_PHAScale
+end
+
+struct _ScaledBackground
+    counts::Vector{Float64}
+    variance::Vector{Float64}
 end
 
 struct _ChannelScaledData{D<:SF.SpectralData}
     data::D
     source_scalings::_PHAScalings
     background_scalings::Union{Nothing,_PHAScalings}
+    background_display::Union{Nothing,_ScaledBackground}
 end
 
 const _DetectorData = Union{SF.SpectralData,_ChannelScaledData}
@@ -16,7 +30,7 @@ _loaded_data(data::SF.SpectralData) = data
 _loaded_data(data::_ChannelScaledData) = getfield(data, :data)
 
 function Base.getproperty(data::_ChannelScaledData, key::Symbol)
-    if key in (:data, :source_scalings, :background_scalings)
+    if key in (:data, :source_scalings, :background_scalings, :background_display)
         return getfield(data, key)
     end
     return getproperty(_loaded_data(data), key)
@@ -34,7 +48,8 @@ function SF.restrict_domain!(data::_ChannelScaledData, args...)
     return data
 end
 
-SF.regroup!(::_ChannelScaledData, args...; kwargs...) = _channel_grouping_error()
+SF.regroup!(::_ChannelScaledData, args...; kwargs...) =
+    throw(ArgumentError("use SpectralGrouping.grouped_dataset or a SpectralGrouping group_* helper for channel-scaled data"))
 
 function _pha_column(hdu, name, n, path)
     values = read(hdu, name)
@@ -108,7 +123,8 @@ function _read_pha_scalings(path, data, spectrum, is_background)
             end
             return fill(Float64(get(header, name, 1.0)), length(rows))
         end
-        return _PHAScalings(copy(wanted), read_scale("AREASCAL"), read_scale("BACKSCAL"))
+        return _PHAScalings(copy(wanted), _PHAScale(read_scale("AREASCAL")),
+                            _PHAScale(read_scale("BACKSCAL")))
     finally
         close(fits)
     end
@@ -126,9 +142,9 @@ then to one. The returned object shares the original dataset and its mask.
 Use `SpectralFitting.mask_energies!` or `SpectralFitting.restrict_domain!`
 on the returned object or the original dataset to select channels. Pass the
 returned object to `plot_data`, where `rebin` groups bins for display, or
-prepare a native-channel fit with `match_dataset_grids` and
-`combine_datasets(...; mode=:joint)`. Prepare the joint dataset again after
-changing the mask.
+prepare a fit with `match_dataset_grids` and
+`combine_datasets(...; mode=:joint, groupings=...)`. Omit `groupings` to fit
+on native channels. Prepare the joint dataset again after changing the mask.
 """
 function with_channel_scalings(
     data::SF.SpectralData; source::AbstractString,
@@ -140,7 +156,7 @@ function with_channel_scalings(
     background_scalings = if !isnothing(background)
         _read_pha_scalings(background, data, data.background, true)
     end
-    return _ChannelScaledData(data, source_scalings, background_scalings)
+    return _ChannelScaledData(data, source_scalings, background_scalings, nothing)
 end
 
 function _selected_rows(data::_ChannelScaledData, mask)
@@ -155,5 +171,5 @@ _pha_scale(data::SF.SpectralData, spectrum, rows, key) = Float64(getproperty(spe
 
 function _pha_scale(data::_ChannelScaledData, spectrum, rows, key)
     scalings = spectrum === data.spectrum ? data.source_scalings : data.background_scalings
-    return getproperty(scalings, key)[rows]
+    return getproperty(scalings, key).values[rows]
 end

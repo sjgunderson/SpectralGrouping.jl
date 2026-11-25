@@ -53,7 +53,6 @@ end
         @test isapprox(member.alpha, [0.1, 0.5])
         @test predict_counts(joint, [1.0, 1.0]) == [100, 300]
         @test_throws ArgumentError SF.regroup!(scaled; min_counts = 50)
-        @test_throws ArgumentError combine_datasets(match; groupings = (grouping_plan(data, :width, 2),))
         @test_throws ArgumentError combine_datasets(match; mode = :sum)
         @test_throws ArgumentError with_channel_scalings(data; source)
 
@@ -80,6 +79,34 @@ end
         @test isapprox(wstat([20.0, 15.0]), 0.0; atol = 1e-12)
 
         model = GridTestSource(SF.FitParam(1.0))
+        plan = grouping_plan(scaled, :width, 2)
+        @test plan.groups == [1:2]
+        @test grouping_plan(scaled, :counts, 40).groups == plan.groups
+        grouped = group_width(scaled, 2)
+        @test grouped.spectrum.data == [50]
+        @test grouped.background.data == [110]
+        @test data.spectrum.data == [30, 20]
+        grouped_fitdata = combine_datasets(match; groupings = (plan,))
+        grouped_member = only(grouped_fitdata.members)
+        @test grouped_fitdata.counts == [50]
+        @test grouped_member.background == [110]
+        @test isapprox(grouped_member.alpha, [0.225])
+        @test isapprox(predict_counts(grouped_fitdata, [1.0, 1.0]), [400])
+        @test isapprox(predict_counts(grouped_fitdata, [1.0, 2.0]), [700])
+        @test isapprox(predict_counts(combine_datasets(match_dataset_grids(grouped)), [1.0, 2.0]), [700])
+        grouped_stat = grid_statistic(grouped_fitdata)
+        grouped_cfg = SF.FittingConfig(SF.FittingProblem(model => grouped_fitdata); stat = grouped_stat)
+        @test isapprox(SF.measure_objective!(grouped_cfg, [0.075], 1), 0.3866405997830449)
+        grouped_fit = SF.finalize_result(grouped_cfg, [0.075], nothing)
+        grouped_plot = plot_curves(grouped_fit; kind = :counts, res = 2, residual_stat = :wstat)
+        @test isapprox(only(grouped_plot.residuals).y, [-only(grouped_fit.stats)])
+        for curves in (grouped_plot, plot_curves(grouped; kind = :counts),
+                       plot_curves(scaled; kind = :counts, groupings = plan))
+            @test isapprox(only(curves.data).y, [35])
+            @test isapprox(only(curves.data).error .^ 2, [53.5])
+        end
+        @test isapprox(only(plot_curves(grouped; kind = :counts, background = :only).data).y, [15])
+
         cfg = SF.FittingConfig(SF.FittingProblem(model => joint); stat)
         fit = SF.finalize_result(cfg, [1.0], nothing)
         @test isapprox(only(fit.stats), wstat([100.0, 300.0]))
@@ -128,6 +155,32 @@ end
             @test SF.measure(multistat, input.counts, predicted, input.variance) ==
                   SF.measure(grid_statistic(input), input.counts, predicted, input.variance)
         end
+    end
+end
+
+@testset "Regrouping preserves native calibration and mask gaps" begin
+    mktempdir() do dir
+        source = write_scale_pha(joinpath(dir, "source.pha"), 1:4, [6, 7, 8, 9];
+                                 areas = [1, 9, 2, 3], backscales = [2, 8, 1, 3])
+        background = write_scale_pha(joinpath(dir, "background.pha"), 4:-1:1, [4, 3, 2, 1];
+                                     role = "BKG")
+        on = spectrum(1:4, [6, 7, 8, 9]; exposure = 100.0, flags = [1, -1, 1, -1])
+        off = spectrum(1:4, [1, 2, 3, 4]; exposure = 100.0)
+        scaled = with_channel_scalings(dataset(on; background = off); source, background)
+        plan = grouping_plan(scaled, :ogip)
+        @test plan.groups == [1:2, 3:4]
+        regrouped = group_width(group_ogip(scaled), 2)
+        grouped = group_width(scaled, 4)
+        joint(data) = combine_datasets(match_dataset_grids(data))
+        @test isapprox(only(joint(regrouped).members).alpha, [22.5])
+        @test isapprox(predict_counts(joint(regrouped), [2.0, 1.0]),
+                       predict_counts(joint(grouped), [2.0, 1.0]))
+        @test isapprox(only(plot_curves(regrouped; kind = :counts, background = :only).data).y,
+                       [188])
+        SF.mask_energies!(scaled, e -> e != 3.0)
+        @test grouping_plan(scaled, :width, 4).groups == [1:1, 4:4]
+        @test_throws ArgumentError grouped_dataset(scaled, plan)
+        @test joint(group_width(scaled, 4)).counts == [6, 9]
     end
 end
 
