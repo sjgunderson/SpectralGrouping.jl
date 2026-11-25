@@ -91,10 +91,7 @@ function _align_plot_inputs(inputs, matching_coordinate)
     return DetectorAlignment(grid, coordinate, members, ones(Int, length(grid)))
 end
 
-function _align_fit_residuals(data::JointDataset, flux, aligned::DetectorAlignment)
-    # Poisson residuals use the counts and background scales used in the fit.
-    members = [_read_plot_member(member, :energy, flux, "$(data.name) [$i]"; unfold = false)
-               for (i, member) in enumerate(data.members)]
+function _align_fit_residuals(members, aligned::DetectorAlignment)
     target = (grid = aligned.grid, coordinate = aligned.coordinate)
     return _align_plot_inputs((; members, target, summed = false), aligned.coordinate).members
 end
@@ -420,18 +417,25 @@ function plot_curves(
         res > 0 && mod1(res, 3) != 3 && statistic in (:cash, :wstat)
     inputs = _read_plot_inputs(data, source_model, extension, fit_stat; groupings, pooling,
                                reference, unfold = unfolding, read_background = background != :include)
-    groups, residual_groups = if pooling
+    # The data panel can use native channels while Poisson residuals use the fit bins.
+    residual_inputs = if fit_residuals
+        [_read_plot_member(member, :energy, inputs.source.values, "$(data.name) [$i]"; unfold = false)
+         for (i, member) in enumerate(data.members)]
+    else
+        inputs.members
+    end
+    groups, residual_groups, fit_groups = if pooling
         if inputs.summed && combine == :none
             # The detector overlap matrices on the fitted sum define the physical view.
             combine = normalization == :counts || unfolding ? :sum : :exposure
         end
         aligned = rebin_detector_grid(_align_plot_inputs(inputs, matching_coordinate), rebin)
-        residuals = fit_residuals ? _align_fit_residuals(data, inputs.source.values, aligned) :
+        residuals = fit_residuals ? _align_fit_residuals(residual_inputs, aligned) :
             aligned.members
-        [aligned.members], [residuals]
+        [aligned.members], [residuals], [residual_inputs]
     else
         individual = [_plot_rebin([member], rebin, background) for member in inputs.members]
-        individual, individual
+        individual, individual, [[member] for member in residual_inputs]
     end
 
     opts = (; kind, xaxis, normalization, combine, background, show_model, flux_unit,
@@ -441,7 +445,7 @@ function plot_curves(
             all(m -> isnothing(m.background), Iterators.flatten(residual_groups))
         throw(ArgumentError("W-stat residuals require measured off-region counts"))
     end
-    for (group, residual_group) in zip(groups, residual_groups)
+    for (group, residual_group, fit_group) in zip(groups, residual_groups, fit_groups)
         curve, folded = _display_run(group, opts)
         push!(curves, curve)
         if !isnothing(folded)
@@ -450,10 +454,10 @@ function plot_curves(
             isnothing(displayed) || push!(models, displayed)
         end
         if res in 1:3
-            append!(residuals, [_residual_curve([member], xaxis, res, statistic, background)
-                                for member in residual_group])
+            append!(residuals, [_residual_curve([member], [fit_member], xaxis, res, statistic, background)
+                                for (member, fit_member) in zip(residual_group, fit_group)])
         elseif res != 0
-            push!(residuals, _residual_curve(residual_group, xaxis, res, statistic, background))
+            push!(residuals, _residual_curve(residual_group, fit_group, xaxis, res, statistic, background))
         end
     end
     xlabel, ylabel, residual_label = _plot_labels(opts, statistic, res, any(c -> c.fractional, residuals))
