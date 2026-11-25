@@ -52,9 +52,26 @@ end
         @test member.background == [100, 10]
         @test isapprox(member.alpha, [0.1, 0.5])
         @test predict_counts(joint, [1.0, 1.0]) == [100, 300]
+        @test_throws ArgumentError SF.regroup!(scaled; min_counts = 50)
         @test_throws ArgumentError combine_datasets(match; groupings = (grouping_plan(data, :width, 2),))
         @test_throws ArgumentError combine_datasets(match; mode = :sum)
         @test_throws ArgumentError with_channel_scalings(data; source)
+
+        @test SF.mask_energies!(scaled, 1.5, 4) === scaled
+        @test data.data_mask == [false, true]
+        masked = combine_datasets(match)
+        @test masked.counts == [20]
+        @test only(masked.members).background == [10]
+        @test isapprox(only(masked.members).alpha, [0.5])
+        @test isapprox(only(plot_curves(scaled; kind = :counts, rebin = 2).data).y, [15])
+        @test joint.counts == [30, 20]
+        SF.mask_energies!(scaled, 0, 4)
+        @test data.data_mask == [false, true]
+        fill!(scaled.data_mask, true)
+        @test SF.restrict_domain!(scaled, e -> e < 2.5) === scaled
+        @test combine_datasets(match).counts == [30]
+        fill!(scaled.data_mask, true)
+        @test isapprox(only(plot_curves(scaled; kind = :counts, rebin = 2).data).y, [35])
 
         stat = grid_statistic(joint)
         wstat(p) = SF.measure(stat, joint.counts, p, joint.variance)

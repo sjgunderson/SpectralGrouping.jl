@@ -11,20 +11,30 @@ In the Julia project used by the notebook, load the checkout containing this
 change with `import Pkg; Pkg.develop(path="/path/to/SpectralGrouping.jl")` and
 restart the kernel.
 
-Apply your notices and masks to the loaded datasets first. Keep
-`rgs_source_phas` and `rgs_background_phas` in the same order as `rgslist`.
+Keep `rgs_source_phas` and `rgs_background_phas` in the same order as `rgslist`.
+Apply energy masks either before or after attaching the channel scalings.
 
 ```julia
 import SpectralGrouping as SG
+import SpectralFitting as SF
 
 @assert length(rgslist) == length(rgs_source_phas) == length(rgs_background_phas)
 rgs_scaled = [
     SG.with_channel_scalings(d; source=s, background=b)
     for (d, s, b) in zip(rgslist, rgs_source_phas, rgs_background_phas)
 ]
+for d in rgs_scaled
+    SF.mask_energies!(d, 0.25, 3)
+end
 matchedrgs = SG.match_dataset_grids(rgs_scaled)
 jointrgs = SG.combine_datasets(matchedrgs; mode=:joint)
 ```
+
+`SF.mask_energies!` narrows the existing mask. To select a new energy range
+from all channels, call `fill!(d.data_mask, true)` before masking again.
+SpectralGrouping still excludes bad-quality source channels. To update a
+prepared fit after changing the mask, run `combine_datasets` again on the
+existing match and rebuild the fit problem, statistic, and configuration.
 
 The helper reads the `SPECTRUM` table and matches source and background
 rows by `CHANNEL`. For each scale it uses the column, then the scalar
@@ -40,7 +50,7 @@ alpha[i] = (source_exposure * source_AREASCAL[i] * source_BACKSCAL[i]) /
 Masked source channels can carry zero scale values, as in RGS chip gaps.
 An active channel with invalid scales or bad background quality raises an
 error when preparing the fit or a background-subtracted plot. Mask the
-affected source channel and rebuild the matched and joint datasets.
+affected source channel and rebuild the joint dataset.
 
 To inspect the first few channels in the prepared data:
 
@@ -53,7 +63,9 @@ i = 1:min(5, length(m.counts))
 
 Compare the net, on-region, and scaled off-region spectra on the same
 display grid. `combine=:exposure` normalizes pooled counts by total nominal
-exposure, and `rebin=5` groups the displayed bins.
+exposure, and `rebin=5` groups the displayed bins. The same `rebin=5`
+keyword works when plotting a single scaled spectrum. The fit uses native
+channels to retain each on/off count pair and its background scale.
 
 ```julia
 using CairoMakie

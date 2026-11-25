@@ -340,7 +340,7 @@ function grouped_dataset(data::SF.SpectralData{T}, plan::GroupingPlan) where {T}
 end
 
 _channel_grouping_error() =
-    throw(ArgumentError("keep channel-scaled data on native channels and use rebin for display"))
+    throw(ArgumentError("channel-scaled fits use native channels; set rebin=N in plot_data or plot_counts for display grouping"))
 
 grouping_plan(::_ChannelScaledData, args...; kwargs...) = _channel_grouping_error()
 grouped_dataset(::_ChannelScaledData, ::GroupingPlan) = _channel_grouping_error()

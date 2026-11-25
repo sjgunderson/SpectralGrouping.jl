@@ -24,6 +24,18 @@ end
 
 SF.make_label(data::_ChannelScaledData) = SF.make_label(data.data)
 
+function SF.mask_energies!(data::_ChannelScaledData, args...)
+    SF.mask_energies!(_loaded_data(data), args...)
+    return data
+end
+
+function SF.restrict_domain!(data::_ChannelScaledData, args...)
+    SF.restrict_domain!(_loaded_data(data), args...)
+    return data
+end
+
+SF.regroup!(::_ChannelScaledData, args...; kwargs...) = _channel_grouping_error()
+
 function _pha_column(hdu, name, n, path)
     values = read(hdu, name)
     values isa AbstractVector{<:Real} && length(values) == n ||
@@ -111,10 +123,12 @@ source PHA and, if the dataset has a background, its original background PHA.
 Read the `SPECTRUM` columns by `CHANNEL`, falling back to scalar keywords and
 then to one. The returned object shares the original dataset and its mask.
 
-Pass the returned object to `plot_data` or `match_dataset_grids`. Use native
-channels for `combine_datasets(...; mode=:joint)` and `rebin` for display.
-Apply any SpectralFitting masks to the original dataset. Use a prepared joint
-dataset for fitting so the calibration is included in the objective.
+Use `SpectralFitting.mask_energies!` or `SpectralFitting.restrict_domain!`
+on the returned object or the original dataset to select channels. Pass the
+returned object to `plot_data`, where `rebin` groups bins for display, or
+prepare a native-channel fit with `match_dataset_grids` and
+`combine_datasets(...; mode=:joint)`. Prepare the joint dataset again after
+changing the mask.
 """
 function with_channel_scalings(
     data::SF.SpectralData; source::AbstractString,
