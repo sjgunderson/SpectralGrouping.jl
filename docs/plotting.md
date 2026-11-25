@@ -182,6 +182,11 @@ axes. `axes=(data=ax,)` suffices with `res=0`. With residuals enabled, supply
 both `data` and `residual` axes. For clarity use the same coordinate, units,
 and residual mode on an overlay.
 
+For a log-log overlay, set both scales before drawing the first spectrum.
+For example, start with `Axis(fig[1, 1]; xscale=log10, yscale=log10)` and
+pass `axes=(data=ax,)` to both calls. Any explicit limits on a logarithmic
+axis must be positive.
+
 ## Separate panels
 
 ```julia

@@ -113,6 +113,7 @@ end
 
 include("grid-matching.jl")
 include("multi-grid-wstat.jl")
+include("fitting-bindings.jl")
 include("plotting.jl")
 include("detector-display.jl")
 include("shared-detector-rebin.jl")
