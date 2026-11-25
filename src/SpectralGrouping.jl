@@ -9,6 +9,7 @@ export GroupingPlan, grouping_plan, group_sum, grouped_dataset
 export group_counts, group_width, group_snr, group_ogip
 export BinGrid, GridMatch, JointDataset, SummedDataset
 export match_dataset_grids, combine_datasets, overlap_projection, predict_counts, grid_statistic
+export tie_all_free!
 export DetectorAlignment, detector_grid, align_detector_grids, rebin_detector_grid
 export PlotCurve, SpectrumPlot, plot_curves, plot_data, plot_counts, plot_fit, plot_unfold
 
@@ -354,6 +355,7 @@ group_ogip(data::SF.SpectralData; kwargs...) =
 include("grids.jl")
 include("combination.jl")
 include("grid-statistics.jl")
+include("fitting-bindings.jl")
 include("plot-inputs.jl")
 include("plot-residuals.jl")
 include("plotting.jl")

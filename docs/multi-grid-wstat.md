@@ -20,8 +20,8 @@ end
 models = [meg_source, heg_source]
 problem = SF.FittingProblem((models[i] => joints[i] for i in eachindex(joints))...)
 
-# Example for a power law with free normalization K and index a.
-SF.bindall!(problem, :K, :a)
+# Share every corresponding free parameter across model slots.
+SG.tie_all_free!(problem)
 stat = SG.grid_statistic(joints...)
 cfg = SF.FittingConfig(problem; stat)
 
@@ -37,10 +37,14 @@ retains its source counts, off-region counts, and source-to-background
 scaling. Coadd orders for display after fitting.
 
 Reusing a Julia model object creates separate SpectralFitting model entries
-with independent free parameters. Bind every corresponding free parameter to
-get one shared parameter vector. Bind a subset when some parameters, such as
-cross-calibration constants, should vary independently. For repeated names
-in a composite model, qualify the component, for example
+with independent free parameters. `SG.tie_all_free!(problem)` ties the
+corresponding free parameters to model slot 1. It resolves component
+labels for composites, including wrapped composites, and checks that every
+slot has the same free parameter selectors before making any ties. Call it
+before creating `SF.FittingConfig`. For a subset of parameters, use
+`SF.bindall!` or `SF.bind!` so parameters such as cross-calibration constants
+can vary independently. For repeated names in a composite model, qualify
+the component, for example
 `SF.bindall!(problem, (:a1, :K))` or
 `SF.bind!(problem, (1, :a1, :K) => (2, :a1, :K))`. For cached Plasma.jl models,
 build one model per incident grid with the same AtomDB object. This gives each
