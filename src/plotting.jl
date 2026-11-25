@@ -91,6 +91,14 @@ function _align_plot_inputs(inputs, matching_coordinate)
     return DetectorAlignment(grid, coordinate, members, ones(Int, length(grid)))
 end
 
+function _align_fit_residuals(data::JointDataset, flux, aligned::DetectorAlignment)
+    # Poisson residuals use the counts and background scales used in the fit.
+    members = [_read_plot_member(member, :energy, flux, "$(data.name) [$i]"; unfold = false)
+               for (i, member) in enumerate(data.members)]
+    target = (grid = aligned.grid, coordinate = aligned.coordinate)
+    return _align_plot_inputs((; members, target, summed = false), aligned.coordinate).members
+end
+
 function _check_matching_coordinate(coordinate)
     isnothing(coordinate) || coordinate in (:energy, :wavelength) ||
         throw(ArgumentError("matching_coordinate must be :energy or :wavelength"))
@@ -188,11 +196,11 @@ function _display_counts(member, background)
     background == :only && isnothing(off) &&
         return zeros(length(member.grid)), spzeros(length(member.grid), length(member.grid)), nothing
     isnothing(off) && return member.counts, member.covariance, member.model
-    scaled = off.alpha .* off.counts
+    scaled, covariance = _scaled_background(off)
     if background == :only
-        return scaled, off.alpha^2 * off.covariance, nothing
+        return scaled, covariance, nothing
     elseif background == :subtract
-        return member.counts - scaled, member.covariance + off.alpha^2 * off.covariance, member.model
+        return member.counts - scaled, member.covariance + covariance, member.model
     end
     model = isnothing(member.model) ? nothing : member.model + scaled
     return member.counts, member.covariance, model
@@ -356,9 +364,10 @@ result. Use `kind=:counts` for counts per bin and `kind=:unfold` for
 response-corrected flux. Pass `model` to overlay a source. For individual
 native plots, `groupings` applies detector plans. For pooled plots, `rebin`
 groups consecutive bins of the common detector grid. With `rebin=nothing`,
-a pooled joint dataset or fit result inherits a fixed width if every member
-used the same `:width` plan target. Otherwise the default is one bin. Fit
-results supply parameter values.
+a pooled joint dataset or fit result uses the common width when every member
+was grouped with the same `:width` target, and one bin otherwise. Pooled
+joint plots project the original selected channels onto the shared detector
+grid before rebinning. Fit results supply parameter values.
 """
 function plot_curves(
     input; kind::Symbol = :data, xaxis::Symbol = :energy, normalization::Symbol = :rate_density,
@@ -399,30 +408,33 @@ function plot_curves(
     if isnothing(rebin)
         rebin = pooling && data isa JointDataset ? data.display_rebin : 1
     end
+    statistic = _plot_statistic(residual_stat, fit_stat)
+    fit_residuals = pooling && data isa JointDataset && !isnothing(data.native_members) &&
+        res > 0 && mod1(res, 3) != 3 && statistic in (:cash, :wstat)
     inputs = _read_plot_inputs(data, source_model, extension, fit_stat; groupings, pooling,
                                reference, unfold = unfolding, read_background = background != :include)
-    members = inputs.members
-    groups = if pooling
+    groups, residual_groups = if pooling
         if inputs.summed && combine == :none
             # The detector overlap matrices on the fitted sum define the physical view.
             combine = normalization == :counts || unfolding ? :sum : :exposure
         end
-        aligned = _align_plot_inputs(inputs, matching_coordinate)
-        members = rebin_detector_grid(aligned, rebin).members
-        [members]
+        aligned = rebin_detector_grid(_align_plot_inputs(inputs, matching_coordinate), rebin)
+        residuals = fit_residuals ? _align_fit_residuals(data, inputs.source.values, aligned) :
+            aligned.members
+        [aligned.members], [residuals]
     else
-        [_plot_rebin([member], rebin, background) for member in members]
+        individual = [_plot_rebin([member], rebin, background) for member in inputs.members]
+        individual, individual
     end
 
     opts = (; kind, xaxis, normalization, combine, background, show_model, flux_unit,
             power, power_scale, scale = Float64(scale), offset = Float64(offset))
     curves, models, residuals = PlotCurve[], PlotCurve[], PlotCurve[]
-    statistic = _plot_statistic(residual_stat, fit_stat)
     if res != 0 && mod1(res, 3) != 3 && statistic == :wstat &&
-            all(m -> isnothing(m.background), members)
+            all(m -> isnothing(m.background), Iterators.flatten(residual_groups))
         throw(ArgumentError("W-stat residuals require measured off-region counts"))
     end
-    for group in groups
+    for (group, residual_group) in zip(groups, residual_groups)
         curve, folded = _display_run(group, opts)
         push!(curves, curve)
         if !isnothing(folded)
@@ -431,9 +443,10 @@ function plot_curves(
             push!(models, displayed)
         end
         if res in 1:3
-            append!(residuals, [_residual_curve([member], xaxis, res, statistic, background) for member in group])
+            append!(residuals, [_residual_curve([member], xaxis, res, statistic, background)
+                                for member in residual_group])
         elseif res != 0
-            push!(residuals, _residual_curve(group, xaxis, res, statistic, background))
+            push!(residuals, _residual_curve(residual_group, xaxis, res, statistic, background))
         end
     end
     xlabel, ylabel, residual_label = _plot_labels(opts, statistic, res, any(c -> c.fractional, residuals))

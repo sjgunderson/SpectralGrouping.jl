@@ -81,7 +81,7 @@ end
     curve = only(plot_curves(joint; opts..., rebin = 2, background = :include).data)
     @test curve.grid.low == [1, 3, 5, 7]
     @test curve.grid.high == [3, 5, 7, 8]
-    @test curve.y == [30, 70, 3.5, 12.5]
+    @test curve.y == [30, 70, 0, 16]
     rebinned = only(plot_curves(joint; opts..., rebin = 10, background = :include).data)
     @test rebinned.grid.low == [1]
     @test rebinned.grid.high == [8]

@@ -66,6 +66,36 @@ function _pooled_profile(on, source, offsets, scales)
              for (alpha, off) in pooled if off > 0); init = 0.0)
 end
 
+function _append_off_regions!(counts, scales, background::_PlotBackground, bin)
+    background.alpha > 0 || return nothing
+    off = background.counts[bin]
+    off >= 0 || throw(ArgumentError("W-stat requires raw nonnegative off-region counts"))
+    push!(counts, off)
+    push!(scales, background.alpha)
+    return nothing
+end
+
+function _append_off_regions!(counts, scales, background::_ChannelPlotBackground, bin)
+    overlap = background.fit_overlap
+    rows, weights = rowvals(overlap), nonzeros(overlap)
+    entries = nzrange(overlap, bin)
+    isempty(entries) && return nothing
+    first_scale = background.alpha[rows[first(entries)]]
+    for entry in entries
+        row = rows[entry]
+        scale = background.alpha[row]
+        scale == first_scale && weights[entry] == 1 || _channel_residual_error()
+        off = background.off_counts[row]
+        off >= 0 || throw(ArgumentError("W-stat requires raw nonnegative off-region counts"))
+        push!(counts, weights[entry] * off)
+        push!(scales, scale)
+    end
+    return nothing
+end
+
+_channel_residual_error() =
+    throw(ArgumentError("channel-scaled W-stat residuals require whole on/off fit bins with a single scale per spectrum and displayed bin; use combine=:none, rebin=1 for fit-bin W-stat residuals, or residual_stat=:chi2 for display bins"))
+
 function _residual_curve(members, xaxis, mode, statistic, background)
     first_member = first(members)
     grid, order = _convert_plot_grid(first_member.grid, first_member.coordinate, xaxis)
@@ -78,13 +108,18 @@ function _residual_curve(members, xaxis, mode, statistic, background)
     for member in members
         off = member.background
         if !isnothing(off)
-            estimate .+= off.alpha .* off.counts
-            variance .+= off.alpha^2 .* diag(off.covariance)
+            scaled, covariance = _scaled_background(off)
+            estimate .+= scaled
+            variance .+= diag(covariance)
         end
     end
     ratio = mod1(mode, 3) == 3
     signed_squared = mod1(mode, 3) == 2
     fractional = any(m -> m.fractional, members)
+    if !ratio && statistic == :wstat && fractional &&
+            any(m -> m.background isa _ChannelPlotBackground, members)
+        _channel_residual_error()
+    end
     if !ratio && statistic in (:cash, :wstat) && any(<(0), observed)
         throw(ArgumentError("Poisson residuals require raw nonnegative on-region counts"))
     end
@@ -114,17 +149,16 @@ function _residual_curve(members, xaxis, mode, statistic, background)
             if statistic == :wstat
                 for member in members
                     bkg = member.background
-                    if !isnothing(bkg) && member.coverage[i] > 0 && bkg.alpha > 0
-                        bkg.counts[i] >= 0 || throw(ArgumentError("W-stat requires raw nonnegative off-region counts"))
-                        push!(off_counts, bkg.counts[i])
-                        push!(scales, bkg.alpha)
+                    if !isnothing(bkg) && member.coverage[i] > 0
+                        _append_off_regions!(off_counts, scales, bkg, i)
                     end
                 end
             end
             deviance = isempty(off_counts) ? _poisson_deviance(on, signal + off) :
                 _pooled_profile(on, signal, off_counts, scales)
             if isfinite(deviance)
-                signed = sign(on - signal - off)
+                estimated_off = isempty(off_counts) ? off : dot(scales, off_counts)
+                signed = sign(on - signal - estimated_off)
                 values[i] = signed * (signed_squared ? deviance : sqrt(max(0.0, deviance)))
             end
         end

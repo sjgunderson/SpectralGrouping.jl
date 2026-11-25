@@ -164,6 +164,8 @@ in keV.
 
 The [plotting guide](docs/plotting.md) includes runnable synthetic examples
 for HETG overlays, RGS detector gaps, and multi-panel figures.
+See [RGS channel scalings](docs/rgs-channel-scalings.md) for plotting and
+fitting loaded RGS spectra with per-channel AREASCAL and BACKSCAL.
 
 Add CairoMakie to the Julia environment where you use SpectralGrouping.
 

@@ -47,7 +47,7 @@ function _edge_index(edges, value)
     return i
 end
 
-function _incident_grid(data::SF.SpectralData)
+function _incident_grid(data::_DetectorData)
     rmf = data.response
     grid = BinGrid(rmf.bins_low, rmf.bins_high)
     size(rmf.matrix, 2) == length(grid) ||
@@ -76,7 +76,7 @@ function _detector_energy_grid(low, high)
     return BinGrid(lo, high)
 end
 
-function _original_detector_grid(data::SF.SpectralData)
+function _original_detector_grid(data::_DetectorData)
     response = data.response
     low, high = response.channel_bins_low, response.channel_bins_high
     length(low) == length(high) == size(response.matrix, 1) == length(response.channels) ||
@@ -123,9 +123,9 @@ function match_dataset_grids(
     detector_grid = nothing, detector_coordinate::Symbol = :energy,
 )
     members = Tuple(datasets)
-    !isempty(members) && all(data -> data isa SF.SpectralData, members) ||
+    !isempty(members) && all(data -> data isa _DetectorData, members) ||
         throw(ArgumentError("provide one or more SpectralFitting SpectralData objects"))
-    length(IdDict(data => nothing for data in members)) == length(members) ||
+    length(IdDict(_loaded_data(data) => nothing for data in members)) == length(members) ||
         throw(ArgumentError("a dataset cannot appear twice in a match"))
     1 <= reference <= length(members) || throw(ArgumentError("reference must index a matched dataset"))
     detector_coordinate in (:energy, :wavelength) ||
@@ -157,7 +157,7 @@ function match_dataset_grids(
                      detectors, target, detector_coordinate)
 end
 
-match_dataset_grids(first::SF.SpectralData, rest::SF.SpectralData...; kwargs...) =
+match_dataset_grids(first::_DetectorData, rest::_DetectorData...; kwargs...) =
     match_dataset_grids((first, rest...); kwargs...)
 
 """

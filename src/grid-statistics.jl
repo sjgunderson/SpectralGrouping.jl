@@ -55,7 +55,7 @@ end
 
 Use one W-stat for a SpectralFitting problem with multiple prepared
 `JointDataset` objects. Each dataset must have raw on/off counts and select
-W-stat on its own. Each model/data pair keeps its incident grid and native
+W-stat on its own. Each model/data pair keeps its incident grid and prepared
 likelihood bins. Bind shared source parameters in the fitting problem before
 creating its configuration.
 """

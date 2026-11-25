@@ -4,10 +4,51 @@ struct _PlotBackground
     alpha::Float64
 end
 
+struct _ChannelPlotBackground
+    counts::Vector{Float64}
+    covariance::SparseMatrixCSC{Float64,Int}
+    off_counts::Vector{Float64}
+    alpha::Vector{Float64}
+    # Columns map displayed bins to the contributing W-stat bins.
+    fit_overlap::SparseMatrixCSC{Float64,Int}
+end
+
+_plot_background(counts, variance, alpha::Float64, ::Nothing = nothing) =
+    _PlotBackground(copy(counts), spdiagm(0 => variance), alpha)
+
+function _plot_background(counts, variance, alpha::Vector{Float64}, display = nothing)
+    scaled, scaled_variance = isnothing(display) ?
+        (alpha .* counts, alpha.^2 .* variance) : (display.counts, display.variance)
+    return _ChannelPlotBackground(scaled, spdiagm(0 => scaled_variance),
+                                  copy(counts), copy(alpha), spdiagm(0 => ones(length(counts))))
+end
+
+_scaled_background(off::_PlotBackground) = (off.alpha .* off.counts, off.alpha^2 * off.covariance)
+_scaled_background(off::_ChannelPlotBackground) = (off.counts, off.covariance)
+
+function _move_plot_background(off::_PlotBackground, transform)
+    return _PlotBackground(transform * off.counts, transform * off.covariance * transpose(transform),
+                           off.alpha)
+end
+
+function _move_plot_background(off::_ChannelPlotBackground, transform)
+    return _ChannelPlotBackground(transform * off.counts, transform * off.covariance * transpose(transform),
+                                  off.off_counts, off.alpha, off.fit_overlap * transpose(transform))
+end
+
+_reorder_plot_background(off::_PlotBackground, order) =
+    _PlotBackground(off.counts[order], off.covariance[order, order], off.alpha)
+
+_reorder_plot_background(off::_ChannelPlotBackground, order) =
+    _ChannelPlotBackground(off.counts[order], off.covariance[order, order], off.off_counts,
+                           off.alpha, off.fit_overlap[:, order])
+
 """
 One observation on a detector grid. `counts` and `covariance` describe the
-on-region measurement. For `background`, multiply its off-region `counts` by
-`alpha` and its `covariance` by `alpha^2` to obtain source-region equivalents.
+on-region measurement. For ordinary `background`, multiply its off-region
+`counts` by `alpha` and covariance by `alpha^2` to obtain source-region
+equivalents. With channel scaling, `background.counts` and
+`background.covariance` are already in source-region units.
 `model` holds folded source counts, and `weights` hold response sensitivity
 when requested. `coverage` is the fraction of each bin's geometric width
 covered by this observation's selected channels in `coordinate`.
@@ -17,7 +58,7 @@ struct AlignedDetectorSpectrum
     coordinate::Symbol
     counts::Vector{Float64}
     covariance::SparseMatrixCSC{Float64,Int}
-    background::Union{Nothing,_PlotBackground}
+    background::Union{Nothing,_PlotBackground,_ChannelPlotBackground}
     model::Union{Nothing,Vector{Float64}}
     weights::Union{Nothing,Vector{Float64}}
     coverage::Vector{Float64}
@@ -89,8 +130,7 @@ end
 function _move_plot_member(member, grid, coordinate, transform)
     off = member.background
     background = if !isnothing(off)
-        _PlotBackground(transform * off.counts, transform * off.covariance * transpose(transform),
-                        off.alpha)
+        _move_plot_background(off, transform)
     end
     model = isnothing(member.model) ? nothing : transform * member.model
     weights = isnothing(member.weights) ? nothing : transform * member.weights
@@ -108,7 +148,7 @@ function _orient_plot_member(member, coordinate)
     grid, order = _convert_plot_grid(member.grid, member.coordinate, coordinate)
     off = member.background
     background = if !isnothing(off)
-        _PlotBackground(off.counts[order], off.covariance[order, order], off.alpha)
+        _reorder_plot_background(off, order)
     end
     model = isnothing(member.model) ? nothing : member.model[order]
     weights = isnothing(member.weights) ? nothing : member.weights[order]
@@ -122,7 +162,7 @@ function _wavelength_widths(energy::BinGrid)
     return HC_KEV_ANGSTROM .* ((energy.high .- energy.low) ./ energy.low ./ energy.high)
 end
 
-function _unfold_weights(data::SF.SpectralData, response_rows)
+function _unfold_weights(data::_DetectorData, rows, response_rows)
     rmf = data.response
     incident = BinGrid(rmf.bins_low, rmf.bins_high)
     size(rmf.matrix, 2) == length(incident) ||
@@ -141,11 +181,8 @@ function _unfold_weights(data::SF.SpectralData, response_rows)
         integrated = arf.effective_area[arf_order] .* (arf_wave.high .- arf_wave.low)
         reverse(overlap_projection(arf_wave, rmf_wave) * integrated)
     end
-    spec = data.spectrum
-    exposure, area_scale = spec.exposure_time, spec.area_scale
-    isfinite(exposure) && exposure > 0 || throw(ArgumentError("unfolding requires a positive PHA exposure"))
-    isfinite(area_scale) && area_scale >= 0 || throw(ArgumentError("AREASCAL must be finite and nonnegative"))
-    weights = (Float64(exposure) * Float64(area_scale)) .* (rmf.matrix[response_rows, :] * reference)
+    exposure = _effective_exposure(data, data.spectrum, rows; allow_zero = true)
+    weights = exposure .* (rmf.matrix[response_rows, :] * reference)
     all(x -> isfinite(x) && x >= 0, weights) ||
         throw(ArgumentError("response weights must be finite and nonnegative"))
     return weights
@@ -157,15 +194,13 @@ function _read_plot_member(data, rows, geometry; unfold, read_background, model 
     counts, factors = _in_counts(data.spectrum, rows, grid.high .- grid.low)
     variance, _ = _count_variance(data.spectrum, rows, counts, factors)
     background = if read_background && !isnothing(data.background)
-        exposure, area = data.spectrum.exposure_time, data.spectrum.area_scale
-        isfinite(exposure) && exposure > 0 && isfinite(area) && area >= 0 ||
-            throw(ArgumentError("background scaling requires positive exposure and nonnegative AREASCAL"))
+        exposure = _effective_exposure(data, data.spectrum, rows; allow_zero = true)
         off = _background_observation(data, rows, grid.high .- grid.low,
-                                      Float64(exposure) * Float64(area); allow_zero = true)
+                                      exposure; allow_zero = true)
         var, _ = _count_variance(data.background, off.rows, off.counts, off.factors)
-        _PlotBackground(off.counts, spdiagm(0 => var), off.scale)
+        _plot_background(off.counts, var, off.scale, _background_display(data, rows))
     end
-    weights = unfold ? _unfold_weights(data, geometry.response_rows[rows]) : nothing
+    weights = unfold ? _unfold_weights(data, rows, geometry.response_rows[rows]) : nothing
     label = string(SF.make_label(data))
     return AlignedDetectorSpectrum(grid, :energy, counts, spdiagm(0 => variance), background, model,
                                    weights, ones(length(grid)), false, Float64(data.spectrum.exposure_time), label)
@@ -183,7 +218,8 @@ function _read_plot_member(member::_MemberResponse, coordinate, flux, label; unf
     model = isnothing(flux) ? nothing : member.response * _native_flux(member, flux)
     weights = unfold ? member.response * _wavelength_widths(member.incident) : nothing
     background = if !isnothing(member.background)
-        _PlotBackground(copy(member.background), spdiagm(0 => member.background_variance), member.alpha)
+        _plot_background(member.background, member.background_variance, member.alpha,
+                         member.background_display)
     end
     return AlignedDetectorSpectrum(member.grid, coordinate, copy(member.counts), spdiagm(0 => member.variance),
                                    background, model, weights, ones(length(member.grid)), false, member.exposure, label)
@@ -274,14 +310,14 @@ _pooled_grouping_error() =
 function _native_plot_inputs(input, model, extension; groupings, pooling, reference, unfold, read_background)
     datasets = if input isa GridMatch
         input.datasets
-    elseif input isa SF.SpectralData
+    elseif input isa _DetectorData
         (input,)
     elseif input isa Union{Tuple,AbstractVector}
         Tuple(input)
     else
         throw(ArgumentError("provide SpectralData, a grid match, a prepared dataset, or a fit result"))
     end
-    !isempty(datasets) && all(data -> data isa SF.SpectralData, datasets) ||
+    !isempty(datasets) && all(data -> data isa _DetectorData, datasets) ||
         throw(ArgumentError("provide at least one SpectralData observation"))
     ref = isnothing(reference) ? (input isa GridMatch ? input.reference : 1) : reference
     1 <= ref <= length(datasets) || throw(ArgumentError("reference must index an observation"))
@@ -338,8 +374,12 @@ function _prepared_plot_inputs(data::AbstractGridDataset, model, extension; unfo
         _detector_target(data, reference)
     end
     coordinate = summed ? data.coordinate : :energy
+    responses = data.members
+    if pooling && data isa JointDataset && !isnothing(data.native_members)
+        responses = data.native_members
+    end
     members = [_read_plot_member(member, coordinate, flux, "$(data.name) [$i]"; unfold)
-               for (i, member) in enumerate(data.members)]
+               for (i, member) in enumerate(responses)]
     if summed
         members = [_move_plot_member(member, data.grid, coordinate, overlap)
                    for (member, overlap) in zip(members, data.overlaps)]
@@ -347,7 +387,8 @@ function _prepared_plot_inputs(data::AbstractGridDataset, model, extension; unfo
     return (; members, target, source, summed)
 end
 
-function _read_plot_inputs(data, model, extension, fit_stat; groupings, pooling, reference, unfold, read_background)
+function _read_plot_inputs(data, model, extension, fit_stat;
+                           groupings, pooling, reference, unfold, read_background)
     if data isa AbstractGridDataset
         isnothing(groupings) || throw(ArgumentError("prepared datasets already have detector grouping; use rebin for display"))
         return _prepared_plot_inputs(data, model, extension; unfold, pooling, reference)

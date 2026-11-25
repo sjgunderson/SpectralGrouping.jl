@@ -3,6 +3,7 @@ uuid = "66eeacd0-cfbf-41b3-99a1-6742ef818586"
 version = "0.2.0"
 
 [deps]
+FITSIO = "525bcba6-941b-5504-bd06-fd0dc1a4d2eb"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 SpectralFitting = "f2c56810-742e-4b72-8bf4-27af3bb81a12"
@@ -15,6 +16,7 @@ SpectralGroupingMakieExt = "Makie"
 
 [compat]
 CairoMakie = "0.15"
+FITSIO = "0.17"
 Makie = "0.24"
 SpectralFitting = "0.7.3 - 0.7.4"
 julia = "1.10"

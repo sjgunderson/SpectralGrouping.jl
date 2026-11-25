@@ -10,11 +10,12 @@ struct _MemberResponse
     explicit_errors::Bool
     background::Union{Nothing,Vector{Float64}}
     background_variance::Union{Nothing,Vector{Float64}}
-    alpha::Float64
+    alpha::Union{Float64,Vector{Float64}}
+    background_display::Union{Nothing,_ScaledBackground}
     exposure::Float64
 end
 
-"""Native detector spectra packed into one SpectralFitting fit objective."""
+"""Detector spectra packed into one SpectralFitting fit objective."""
 struct JointDataset <: AbstractGridDataset
     model_edges::Vector{Float64}
     members::Vector{_MemberResponse}
@@ -27,12 +28,15 @@ struct JointDataset <: AbstractGridDataset
     detector_target::BinGrid
     detector_coordinate::Symbol
     display_rebin::Int
+    native_members::Union{Nothing,Vector{_MemberResponse}}
 end
 
 function JointDataset(model_edges, members, member_ranges, counts, variance, name,
-                      detector_grids, reference, detector_target, detector_coordinate)
+                      detector_grids, reference, detector_target, detector_coordinate,
+                      display_rebin::Int = 1)
     return JointDataset(model_edges, members, member_ranges, counts, variance, name,
-                        detector_grids, reference, detector_target, detector_coordinate, 1)
+                        detector_grids, reference, detector_target, detector_coordinate,
+                        display_rebin, nothing)
 end
 
 JointDataset(model_edges, members, member_ranges, counts, variance, name, detector_grids, reference) =
@@ -88,31 +92,109 @@ function _count_variance(spectrum, rows, counts, factors)
     return variance, explicit || !iszero(sys)
 end
 
-function _effective_exposure(spectrum)
-    exposure = Float64(spectrum.exposure_time) * Float64(spectrum.area_scale)
+_every_scale(f, value::Real) = f(value)
+_every_scale(f, values::AbstractVector) = all(f, values)
+_row_exposure(value::Float64, row) = value
+_row_exposure(values::Vector{Float64}, row) = values[row]
+
+function _effective_exposure(data, spectrum, rows; allow_zero = false)
+    exposure = Float64(spectrum.exposure_time)
     isfinite(exposure) && exposure > 0 ||
-        throw(ArgumentError("effective exposure must be positive and finite"))
-    return exposure
+        throw(ArgumentError("exposure must be positive and finite"))
+    areas = _pha_scale(data, spectrum, rows, :area_scale)
+    effective = exposure .* areas
+    zero_allowed = allow_zero && data isa SF.SpectralData
+    _every_scale(x -> isfinite(x) && (x > 0 || zero_allowed && iszero(x)), effective) ||
+        throw(ArgumentError("invalid effective exposure from AREASCAL in a selected channel"))
+    return effective
 end
 
 function _background_observation(data, rows, widths, source_exposure; allow_zero = false)
     bkg = data.background
     isnothing(bkg) && return nothing
-    length(bkg.channels) == length(bkg.data) ||
-        throw(DimensionMismatch("background channels and data differ in length"))
-    index = _channel_index(bkg.channels, "background")
-    wanted = data.spectrum.channels[rows]
-    mapped = [get(index, channel, 0) for channel in wanted]
-    all(>(0), mapped) || throw(ArgumentError("a selected source channel is missing from the background"))
+    mapped = _background_rows(data, rows)
+    if data isa _ChannelScaledData
+        length(bkg.quality) == length(bkg.channels) ||
+            throw(DimensionMismatch("background QUALITY and CHANNEL arrays differ in length"))
+        all(iszero, view(bkg.quality, mapped)) ||
+            throw(ArgumentError("a selected source channel has bad background QUALITY; mask it in the source before fitting or subtracting"))
+    end
     counts, factors = _in_counts(bkg, mapped, widths)
-    source_backscale = Float64(data.spectrum.background_scale)
-    background_backscale = Float64(bkg.background_scale)
-    all(x -> isfinite(x) && x > 0, (source_backscale, background_backscale)) ||
+    source_backscale = _pha_scale(data, data.spectrum, rows, :background_scale)
+    background_backscale = _pha_scale(data, bkg, mapped, :background_scale)
+    all(x -> _every_scale(v -> isfinite(v) && v > 0, x), (source_backscale, background_backscale)) ||
         throw(ArgumentError("source and background BACKSCAL must be finite and positive"))
-    scale = (source_exposure / _effective_exposure(bkg)) * (source_backscale / background_backscale)
-    isfinite(scale) && (scale > 0 || allow_zero && iszero(scale)) ||
+    background_exposure = _effective_exposure(data, bkg, mapped)
+    scale = (source_exposure ./ background_exposure) .* (source_backscale ./ background_backscale)
+    zero_allowed = allow_zero && data isa SF.SpectralData
+    _every_scale(x -> isfinite(x) && (x > 0 || zero_allowed && iszero(x)), scale) ||
         throw(ArgumentError("invalid source-to-background scaling"))
     return (; counts, factors, rows = mapped, scale)
+end
+
+function _group_pha_scale(scale::_PHAScale, groups, rows)
+    low = [minimum(scale.low[rows[i]] for i in group) for group in groups]
+    high = [maximum(scale.high[rows[i]] for i in group) for group in groups]
+    # Sherpa's grouped W-stat uses the midpoint of each calibration column's
+    # extrema. Keep the extrema so a second grouping uses the native range.
+    return _PHAScale(low .+ (high .- low) ./ 2, low, high)
+end
+
+function _group_pha_scalings(scalings, groups, rows)
+    return _PHAScalings(
+        collect(eachindex(groups)),
+        _group_pha_scale(scalings.area_scale, groups, rows),
+        _group_pha_scale(scalings.background_scale, groups, rows),
+    )
+end
+
+_background_display(::SF.SpectralData, rows) = nothing
+
+function _background_display(data::_ChannelScaledData, rows)
+    display = data.background_display
+    isnothing(display) && return nothing
+    return _ScaledBackground(display.counts[rows], display.variance[rows])
+end
+
+function _group_background_display(data, plan, rows, off)
+    native_counts, native_variance = zeros(length(plan.channels)), zeros(length(plan.channels))
+    display = data.background_display
+    if isnothing(display)
+        variance, _ = _count_variance(data.background, off.rows, off.counts, off.factors)
+        native_counts[rows] = off.scale .* off.counts
+        native_variance[rows] = off.scale.^2 .* variance
+    else
+        native_counts[rows] = display.counts[rows]
+        native_variance[rows] = display.variance[rows]
+    end
+    return _ScaledBackground(group_sum(plan, native_counts), group_sum(plan, native_variance))
+end
+
+function grouped_dataset(data::_ChannelScaledData, plan::GroupingPlan)
+    grouped = _group_geometry(data, plan)
+    (; active_rows, geometry) = grouped
+    exposure = _effective_exposure(data, data.spectrum, active_rows)
+    widths = Float64.(geometry.high[active_rows]) .- Float64.(geometry.low[active_rows])
+    off = _background_observation(data, active_rows, widths, exposure)
+
+    source = _group_pha_scalings(data.source_scalings, plan.groups, eachindex(plan.channels))
+    native_area, grouped_area = data.source_scalings.area_scale.values, source.area_scale.values
+    # The downstream model multiplies by grouped_area. This projection
+    # cancels that factor while retaining each channel's original AREASCAL.
+    weights = [native_area[row] / grouped_area[i] for (i, group) in enumerate(plan.groups) for row in group]
+    background, display, mapped = if isnothing(off)
+        nothing, nothing, nothing
+    else
+        counts, _ = _in_counts(data.spectrum, active_rows, widths)
+        _raw_counts(counts) && _raw_counts(off.counts) ||
+            throw(ArgumentError("grouping calibrated on/off data requires raw integer counts in each selected input channel"))
+        background_rows = zeros(Int, length(plan.channels))
+        background_rows[active_rows] = off.rows
+        scalings = _group_pha_scalings(data.background_scalings, plan.groups, background_rows)
+        scalings, _group_background_display(data, plan, active_rows, off), off.rows
+    end
+    grouped_data = _grouped_spectral_data(data.data, plan, grouped, mapped; response_weights = weights)
+    return _ChannelScaledData(grouped_data, source, background, display)
 end
 
 function _member_response(data, incident, projection, coordinate, selected, geometry)
@@ -122,7 +204,7 @@ function _member_response(data, incident, projection, coordinate, selected, geom
     widths = Float64.(geometry.high[rows]) .- Float64.(geometry.low[rows])
     counts, factors = _in_counts(data.spectrum, rows, widths)
     variance, explicit = _count_variance(data.spectrum, rows, counts, factors)
-    exposure = _effective_exposure(data.spectrum)
+    exposure = _effective_exposure(data, data.spectrum, rows)
     off = _background_observation(data, rows, widths, exposure)
     background = isnothing(off) ? nothing : off.counts
     background_variance = if !isnothing(off)
@@ -132,21 +214,27 @@ function _member_response(data, incident, projection, coordinate, selected, geom
 
     matrix = convert(SparseMatrixCSC{Float64,Int}, data.response.matrix[geometry.response_rows[rows], :])
     area = isnothing(data.ancillary) ? nothing : data.ancillary.effective_area
-    values = nonzeros(matrix)
+    values, row_indices = nonzeros(matrix), rowvals(matrix)
     for j in axes(matrix, 2)
-        factor = isnothing(area) ? exposure : exposure * area[j]
+        arf_area = isnothing(area) ? 1.0 : area[j]
         for i in nzrange(matrix, j)
-            values[i] *= factor
+            values[i] *= arf_area * _row_exposure(exposure, row_indices[i])
         end
     end
     all(isfinite, values) || throw(ArgumentError("response entries must be finite after exposure and ARF scaling"))
     return _MemberResponse(grid, incident, copy(projection), matrix, counts, variance, explicit,
-                           background, background_variance, alpha, Float64(data.spectrum.exposure_time))
+                           background, background_variance, alpha, _background_display(data, rows),
+                           Float64(data.spectrum.exposure_time))
 end
 
-function _matched_members(match, plans, coordinate)
+function _matched_members(match, plans, coordinate; ungrouped = nothing)
     members = _MemberResponse[]
-    for (data, native, projection, plan) in zip(match.datasets, match.native_grids, match.projections, plans)
+    for (i, (data, native, projection, plan)) in
+            enumerate(zip(match.datasets, match.native_grids, match.projections, plans))
+        if !isnothing(ungrouped) && isnothing(plan)
+            push!(members, ungrouped[i])
+            continue
+        end
         current = _incident_grid(data)
         current.low == native.low && current.high == native.high ||
             throw(ArgumentError("incident response boundaries changed; match the grids again"))
@@ -170,6 +258,11 @@ function _joint_dataset(match, plans, name)
                               match.reference, match.detector_grids, match.detector_target,
                               match.detector_coordinate)
     members = _matched_members(grouped_match, ntuple(_ -> nothing, length(plans)), :energy)
+    # Retain the selected detector channels for pooling the data and model
+    # directly onto display edges. The fit continues to use members.
+    native_members = if any(!isnothing, plans)
+        _matched_members(match, plans, :energy; ungrouped = members)
+    end
     offsets = cumsum(vcat(0, [length(member.counts) for member in members]))
     ranges = [(offsets[i] + 1):offsets[i + 1] for i in eachindex(members)]
     counts = reduce(vcat, (member.counts for member in members))
@@ -179,7 +272,8 @@ function _joint_dataset(match, plans, name)
         all(plan -> !isnothing(plan) && plan.target_width == width, plans) ? width : 1
     return JointDataset(copy(match.model_edges), members, ranges, counts, variance, name,
                         map(_bin_grid, match.detector_grids), match.reference,
-                        _bin_grid(match.detector_target), match.detector_coordinate, display_rebin)
+                        _bin_grid(match.detector_target), match.detector_coordinate,
+                        display_rebin, native_members)
 end
 
 _raw_counts(values) = all(x -> x >= 0 && abs(x - round(x)) <= EDGE_RTOL * max(1.0, abs(x)), values)
@@ -226,10 +320,11 @@ end
     combine_datasets(match; mode=:joint, groupings=nothing, grid=nothing,
                      coordinate=:wavelength, name="combined")
 
-Prepare a fit on the native detector bins (`:joint`) or sum the spectra onto
+Prepare a fit on each member's detector bins (`:joint`) or sum the spectra onto
 one detector grid (`:sum`). In both cases a single source feeds each member's
 response. Optional `groupings` contains one `GroupingPlan` or `nothing` per
-member. In sum mode the reference plan defines the output bin boundaries and
+member. In joint mode the plans change the fit bins for the respective members.
+In sum mode the reference plan defines the output bin boundaries and
 the originals supply the detector counts and response rows for each overlap.
 Use `grid` to override the summed detector grid, in Å by default or keV with
 `coordinate=:energy`. The sum is for background-free raw counts.
