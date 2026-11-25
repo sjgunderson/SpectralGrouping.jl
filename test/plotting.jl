@@ -118,3 +118,54 @@ end
     @test only(diagnostics.data).valid == [true, false]
     @test all(only(diagnostics.residuals).valid)
 end
+
+@testset "Zero incident energy in unfolded spectra" begin
+    hc = SpectralGrouping.HC_KEV_ANGSTROM
+    lo, hi = [0.0, 1, 2], [1.0, 2, 4]
+    det_lo, det_hi = [0.5, 1, 2.5], [1.0, 2, 4]
+    arf = SF.AncillaryResponse(copy(lo), copy(hi), [0.0, 2, 4])
+    data = response_dataset(
+        spectrum(1:3, [5, 7, 9]; exposure = 2.0),
+        det_lo, det_hi, copy(lo), copy(hi), [1.0 1 0; 0 0.5 1; 0 0 1]; ancillary = arf,
+    )
+    model = GridTestSource(SF.FitParam(1.0))
+    match = match_dataset_grids(data)
+    joint = combine_datasets(match)
+    expected = hc .* [2, 3, 2]
+
+    for (input, overlay) in ((data, nothing), (data, model), (joint, model))
+        energy = only(plot_curves(input; kind = :unfold, model = overlay).data)
+        @test isapprox(energy.weights, expected)
+        @test all(energy.valid)
+        @test energy.grid.low == det_lo
+        @test energy.grid.high == det_hi
+        @test all(isfinite, energy.y)
+    end
+    wave = plot_curves(data; kind = :unfold, xaxis = :wavelength, model, model_display = :source)
+    @test isapprox(only(wave.data).weights, reverse(expected))
+    @test isapprox(only(wave.model).grid.high, [hc / 2, hc])
+    @test data.response.bins_low == data.ancillary.bins_low == lo
+    @test data.domain == match.model_edges == [0, 1, 2, 4]
+    @test isapprox(predict_counts(joint, diff(match.model_edges)), [4, 18, 16])
+    @test grouping_plan(data, :width, 3).groups == [1:2, 3:3]
+
+    misaligned = SF.AncillaryResponse([0.0, 0.5, 2.5], [0.5, 1.5, 4.0], [0.0, 4.0, 2.0])
+    spec = spectrum(1:3, [5, 7, 9]; exposure = 1.0)
+    response = [1.0 0 0; 0 1 0; 0 0 1]
+    with_arf = response_dataset(spec, det_lo, det_hi, lo, hi, response; ancillary = misaligned)
+    weights = only(plot_curves(with_arf; kind = :unfold).data).weights
+    @test isapprox(weights, hc .* [4, 4 / 3, 3 / 10])
+
+    rsp = response_dataset(spec, det_lo, det_hi, lo, hi, response)
+    full_response = [hc * (1 / 1e-10 - 1), hc / 2, hc / 4]
+    for input in (rsp, combine_datasets(match_dataset_grids(rsp)))
+        @test isapprox(only(plot_curves(input; kind = :unfold).data).weights, full_response)
+    end
+    @test rsp.response.bins_low == lo
+
+    single = response_dataset(spectrum([1], [5]; exposure = 1.0), [1.0], [2.0],
+                              [0.0], [1e-12], fill(1.0, 1, 1))
+    wave = plot_curves(single; kind = :unfold, xaxis = :wavelength, model, model_display = :source)
+    @test isapprox(only(only(wave.data).weights), hc / 1e-12)
+    @test isempty(wave.model)
+end

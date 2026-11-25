@@ -43,6 +43,9 @@ end
         @test data.response.matrix == Matrix{Float64}(I, 2, 2)
         @test data.spectrum.data == [30, 20]
         @test data.background.data == [10, 100]
+        data.energy_high[1] = data.energy_low[1]
+        @test restore_detector_bounds!(scaled) === scaled
+        @test scaled.energy_high == [2, 3]
 
         match = match_dataset_grids(scaled)
         @test_throws ArgumentError match_dataset_grids(scaled, data)

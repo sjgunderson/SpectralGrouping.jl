@@ -8,6 +8,7 @@ using SpectralFitting: SpectralUnits, @u_str
 
 export GroupingPlan, grouping_plan, group_sum, grouped_dataset
 export group_counts, group_width, group_snr, group_ogip
+export restore_detector_bounds!
 export BinGrid, GridMatch, JointDataset, SummedDataset
 export match_dataset_grids, combine_datasets, overlap_projection, predict_counts, grid_statistic
 export with_channel_scalings
@@ -52,6 +53,40 @@ function _channel_index(channels, label)
     index = Dict(channel => row for (row, channel) in enumerate(channels))
     length(index) == length(channels) || throw(ArgumentError("duplicate $label channel labels"))
     return index
+end
+
+"""
+    restore_detector_bounds!(data)
+
+Copy the RMF's paired EBOUNDS into the SpectralFitting dataset in source-channel
+order. Call after loading and before applying energy cuts or converting to
+count density. This also accepts a dataset returned by `with_channel_scalings`.
+The current mask is retained. Return `data`.
+"""
+function restore_detector_bounds!(data::_DetectorData)
+    loaded = _loaded_data(data)
+    response = loaded.response
+    channels = loaded.spectrum.channels
+    allunique(channels) || throw(ArgumentError("duplicate source channel labels"))
+    length(response.channels) == length(response.channel_bins_low) ==
+        length(response.channel_bins_high) == size(response.matrix, 1) ||
+        throw(DimensionMismatch("response channel arrays differ in length"))
+
+    index = _channel_index(response.channels, "response")
+    low = similar(response.channel_bins_low, length(channels))
+    high = similar(low)
+    for (row, channel) in enumerate(channels)
+        response_row = get(index, channel, 0)
+        response_row > 0 || throw(ArgumentError("source channel $channel is missing from the response"))
+        lo, hi = response.channel_bins_low[response_row], response.channel_bins_high[response_row]
+        isfinite(lo) && isfinite(hi) && lo < hi ||
+            throw(ArgumentError("invalid EBOUNDS for source channel $channel"))
+        low[row], high[row] = lo, hi
+    end
+
+    loaded.energy_low = low
+    loaded.energy_high = high
+    return data
 end
 
 function _geometry(data::_DetectorData, rows)

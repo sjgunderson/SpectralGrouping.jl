@@ -36,6 +36,13 @@ by_snr = group_snr(data, 5.0; max_channels=30)
 by_file_flags = group_ogip(data)
 ```
 
+For RGS spectra loaded in descending energy order, call
+`restore_detector_bounds!(data)` immediately after `OGIPDataset` and before
+`mask_energies!`. This restores both RMF EBOUNDS for each channel by its label,
+so energy cuts use the measured channel intervals. SpectralFitting may emit
+its alignment warning during loading, before the helper runs. Reload spectra
+with existing energy cuts to apply those cuts again using the restored bounds.
+
 Each command returns a new `SpectralData`. Keep the original dataset to try
 different groupings or return to native channels. Grouping by counts and S/N uses
 observed source-region counts, including any background events in that region.
@@ -229,6 +236,11 @@ then folds the result through the RMF and scales by PHA exposure and
 AREASCAL. With no separate ARF it assumes a full response matrix that
 already includes effective area. Counts and sensitivity are pooled before
 division. The data-only path supports different ARF/RMF boundaries.
+For an incident bin starting at 0 keV, unfolding uses a 10⁻¹⁰ keV
+lower bound for the wavelength integral (or a smaller bound if needed to
+fit within the response grids). A nonzero response in that bin makes its
+sensitivity depend on this cutoff, which applies only to the plotted
+wavelength integral.
 A supplied model uses the fitting response; standalone model overlays
 require aligned ARF/RMF input bins. For `plot_unfold(result)`, the folded
 curve is the default. Use `model_display=:source` for the unsmeared source.

@@ -9,6 +9,40 @@ function response_dataset(
     )
 end
 
+@testset "Restore descending detector bounds before masking" begin
+    spec = spectrum(11:14, [50, 20, 7, 5]; exposure = 1.0)
+    rmf = SF.ResponseMatrix(
+        sparse(reshape([13.0, 11, 14, 12, 99], 5, 1)), [13, 11, 14, 12, 99],
+        [1.0, 3, 0.5, 2, 5], [1.5, 4, 1, 3, 6], [0.5], [4.0],
+    )
+    low, high = [3.0, 2, 1, 0.5], [2.0, 1, 0.5, 1]
+    data = SF.SpectralData{Float64,Nothing,Nothing}(
+        spec, rmf, nothing, nothing, copy(low), high, [0.5, 4.0],
+        BitVector([true, true, false, true]), nothing,
+    )
+    incorrect = deepcopy(data)
+    SF.mask_energies!(incorrect, 0.75, 3.5)
+    @test incorrect.data_mask == [true, true, false, false]
+
+    @test restore_detector_bounds!(data) === data
+    @test data.energy_low == low
+    @test data.energy_high == [4.0, 3, 1.5, 1]
+    @test data.data_mask == [true, true, false, true]
+    @test data.domain == [0.5, 4.0]
+    @test rmf.channel_bins_high == [1.5, 4, 1, 3, 6]
+    @test rmf.channels == [13, 11, 14, 12, 99]
+    SF.mask_energies!(data, 0.75, 3.5)
+    @test data.data_mask == [false, true, false, false]
+    joint = combine_datasets(match_dataset_grids(data))
+    @test joint.counts == [20]
+    @test predict_counts(joint, [1.0]) == [12]
+
+    missing = deepcopy(incorrect)
+    missing.response.channels[3] = 100
+    @test_throws ArgumentError restore_detector_bounds!(missing)
+    @test missing.energy_high == high
+end
+
 const grid_model_calls = Ref(0)
 struct GridTestSource{T} <: SF.AbstractSpectralModel{T,SF.Additive}
     K::T
