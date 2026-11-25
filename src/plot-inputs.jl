@@ -157,8 +157,25 @@ function _orient_plot_member(member, coordinate)
                                    member.exposure, member.label)
 end
 
+function _unfold_energy_floor(grids::BinGrid...)
+    # Use the Sherpa default, or a smaller common floor for bins below it.
+    positive_edge = minimum(grids) do grid
+        low, high = first(grid.low), first(grid.high)
+        iszero(low) ? high : low
+    end
+    return min(1e-10, positive_edge / 2)
+end
+
+function _unfold_energy_grid(energy::BinGrid, minimum_energy)
+    iszero(first(energy.low)) || return energy
+    minimum_energy > 0 || throw(ArgumentError("incident energy bin is too small to convert to wavelength"))
+    low = copy(energy.low)
+    low[1] = minimum_energy
+    return BinGrid(low, energy.high)
+end
+
 function _wavelength_widths(energy::BinGrid)
-    all(>(0), energy.low) || throw(ArgumentError("unfolding requires positive incident energy boundaries"))
+    energy = _unfold_energy_grid(energy, _unfold_energy_floor(energy))
     return HC_KEV_ANGSTROM .* ((energy.high .- energy.low) ./ energy.low ./ energy.high)
 end
 
@@ -176,8 +193,13 @@ function _unfold_weights(data::_DetectorData, rows, response_rows)
             throw(DimensionMismatch("ARF areas must match its incident bins"))
         all(x -> isfinite(x) && x >= 0, arf.effective_area) ||
             throw(ArgumentError("ARF effective areas must be finite and nonnegative"))
-        arf_wave, arf_order = _convert_plot_grid(arf_energy, :energy, :wavelength)
-        rmf_wave, _ = _convert_plot_grid(incident, :energy, :wavelength)
+        minimum_energy = _unfold_energy_floor(incident, arf_energy)
+        arf_wave, arf_order = _convert_plot_grid(
+            _unfold_energy_grid(arf_energy, minimum_energy), :energy, :wavelength,
+        )
+        rmf_wave, _ = _convert_plot_grid(
+            _unfold_energy_grid(incident, minimum_energy), :energy, :wavelength,
+        )
         integrated = arf.effective_area[arf_order] .* (arf_wave.high .- arf_wave.low)
         reverse(overlap_projection(arf_wave, rmf_wave) * integrated)
     end

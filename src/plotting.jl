@@ -286,7 +286,14 @@ function _display_run(members, opts)
 end
 
 function _source_plot_curve(source, data_curve, opts)
-    grid, order = _convert_plot_grid(source.grid, :energy, opts.xaxis)
+    energy, values = source.grid, source.values
+    if opts.xaxis == :wavelength && iszero(first(energy.low))
+        # The integrated source bin starting at zero has no finite wavelength span.
+        length(energy) == 1 && return nothing
+        energy = BinGrid(energy.low[2:end], energy.high[2:end])
+        values = view(values, 2:length(values))
+    end
+    grid, order = _convert_plot_grid(energy, :energy, opts.xaxis)
     # Draw only source bins wholly inside a run of valid detector bins.
     bounds = data_curve.grid
     runs = Tuple{Float64,Float64}[]
@@ -310,7 +317,7 @@ function _source_plot_curve(source, data_curve, opts)
     end
     multiplier = opts.scale .* _flux_multiplier(grid, opts.xaxis, opts.flux_unit, opts.power, opts.power_scale) ./
         _widths(grid)
-    return _make_plot_curve(grid, source.values[order], nothing, multiplier, valid,
+    return _make_plot_curve(grid, values[order], nothing, multiplier, valid,
                             data_curve.label, false; offset = opts.offset)
 end
 
@@ -440,7 +447,7 @@ function plot_curves(
         if !isnothing(folded)
             displayed = unfolding && model_display == :source ?
                 _source_plot_curve(inputs.source, curve, opts) : folded
-            push!(models, displayed)
+            isnothing(displayed) || push!(models, displayed)
         end
         if res in 1:3
             append!(residuals, [_residual_curve([member], xaxis, res, statistic, background)
