@@ -13,6 +13,28 @@ end
 
 _logscale(scale) = scale === log10 || scale === log || scale === log2
 
+function _set_axis_scale!(ax, dim, scale)
+    setting = dim == 1 ? ax.xscale : ax.yscale
+    setting[] === scale && return nothing
+
+    if _logscale(scale) && isempty(ax.scene.plots) && minimum(ax.targetlimits[])[dim] <= 0
+        limits = Makie.convert_limit_attribute(ax.limits[])
+        bounds = something(limits[dim], (nothing, nothing))
+        positive = map(bound -> !isnothing(bound) && bound > 0 ? bound : nothing, bounds)
+        default_low, default_high = Makie.defaultlimits(scale)
+        low = something(positive[1], min(default_low, something(positive[2], default_high) / 10))
+        high = something(positive[2], max(default_high, 10 * low))
+
+        # Makie uses the old target limits while the axis has no plots.
+        ax.limits[] = Base.setindex(limits, (low, high), dim)
+        setting[] = scale
+        ax.limits[] = Base.setindex(limits, all(isnothing, positive) ? nothing : positive, dim)
+    else
+        setting[] = scale
+    end
+    return nothing
+end
+
 function _visible(curve, xscale, yscale)
     good = curve.valid .& isfinite.(curve.y)
     _logscale(xscale) && (good .&= curve.grid.low .> 0)
@@ -90,15 +112,15 @@ function SG._render_plot(
     has_residual = !isempty(plot.residuals)
     fig, top, lower = _axes(figure, axes, has_residual, xscale, yscale)
     if !isnothing(axes) && !isnothing(xscale)
-        top.xscale = _plotscale(xscale)
+        _set_axis_scale!(top, 1, _plotscale(xscale))
     end
     if !isnothing(axes) && !isnothing(yscale)
-        top.yscale = _plotscale(yscale)
+        _set_axis_scale!(top, 2, _plotscale(yscale))
     end
     top.xlabel = plot.xlabel
     top.ylabel = plot.ylabel
     if has_residual
-        lower.xscale = top.xscale[]
+        _set_axis_scale!(lower, 1, top.xscale[])
         lower.xlabel = plot.xlabel
         lower.ylabel = plot.residual_label
         Makie.linkxaxes!(top, lower)
