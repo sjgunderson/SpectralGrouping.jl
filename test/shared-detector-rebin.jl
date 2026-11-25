@@ -110,7 +110,7 @@ end
     @test isapprox(sum(grouped.members[2].counts), 8)
 end
 
-@testset "Reference groups and full-grid rebinning" begin
+@testset "Pooled plots default to the common width on the shared grid" begin
     a, b, wave = rgs_width_pair(; n = 60, good1 = [1:20; 41:60], good2 = 21:60)
     matched = match_dataset_grids(a, b)
     plans = [grouping_plan(d, :width, 20) for d in (a, b)]
@@ -122,13 +122,13 @@ end
 
     for input in (joint, fit)
         curve = only(plot_curves(input; opts...).data)
-        @test isapprox(curve.grid.low, wave[[1, 41]])
-        @test isapprox(curve.grid.high, wave[[21, 61]])
-        @test isapprox(curve.y, [20, 60])
-        @test isapprox(curve.error, sqrt.([20, 60]))
+        @test isapprox(curve.grid.low, wave[[1, 21, 41]])
+        @test isapprox(curve.grid.high, wave[[21, 41, 61]])
+        @test isapprox(curve.y, [20, 40, 60])
+        @test isapprox(curve.error, sqrt.([20, 40, 60]))
         shared = only(plot_curves(input; opts..., rebin = 20).data)
-        @test isapprox(shared.grid.low, wave[[1, 21, 41]])
-        @test isapprox(shared.y, [20, 40, 60])
+        @test shared.grid.low == curve.grid.low
+        @test shared.y == curve.y
         @test length(only(plot_curves(input; opts..., rebin = 10).data).grid) == 6
         @test length(only(plot_curves(input; opts..., rebin = 1).data).grid) == 60
         @test length(align_detector_grids(input).grid) == 60
@@ -138,9 +138,9 @@ end
     @test joint.counts == [20, 20, 40, 40]
 
     mixed = combine_datasets(matched; groupings = (plans[1], grouping_plan(b, :width, 10)))
-    @test length(only(plot_curves(mixed; opts...).data).grid) == 2
+    @test length(only(plot_curves(mixed; opts...).data).grid) == 60
     count_grouped = combine_datasets(matched; groupings = [grouping_plan(d, :counts, 10) for d in (a, b)])
-    @test length(only(plot_curves(count_grouped; opts...).data).grid) == 4
+    @test length(only(plot_curves(count_grouped; opts...).data).grid) == 60
 end
 
 @testset "Shifted groups preserve narrow lines and folded counts" begin
@@ -149,11 +149,11 @@ end
     b.spectrum.data .= 0
     a.background.data .= 0
     b.background.data .= 0
-    line_row = findfirst(==(12), b.spectrum.channels)
-    b.spectrum.data[line_row] = 100
+    line_row = findfirst(==(12), a.spectrum.channels)
+    a.spectrum.data[line_row] = 100
     nonzeros(a.response.matrix) .= 0
     nonzeros(b.response.matrix) .= 0
-    b.response.matrix[line_row, 1] = 1
+    a.response.matrix[line_row, 1] = 1
 
     match = match_dataset_grids(a, b)
     plans = [grouping_plan(d, :width, 10) for d in (a, b)]
@@ -164,46 +164,47 @@ end
     cfg = SF.FittingConfig(SF.FittingProblem(model => joint); stat = grid_statistic(joint))
     fit = SF.finalize_result(cfg, [1.0], nothing)
     opts = (; kind = :counts, xaxis = :wavelength, combine = :sum)
-    edges = BinGrid(wave[[6, 16]], wave[[16, 26]])
+    edges = BinGrid(wave[[1, 11, 21]], wave[[11, 21, 26]])
     direct = match_dataset_grids(a, b; detector_grid = edges, detector_coordinate = :wavelength)
     direct_plot = plot_curves(direct; opts..., model)
 
-    # The two fitted spectra put the line in different ten-channel windows.
-    @test joint.counts == [0, 0, 100, 0]
-    @test isapprox(only(direct_plot.data).y, [100, 0])
-    @test isapprox(only(direct_plot.model).y, [3, 0])
+    # The source fit bin containing the line straddles two display bins.
+    @test joint.counts == [0, 100, 0, 0]
+    @test isapprox(only(direct_plot.data).y, [0, 100, 0])
+    @test isapprox(only(direct_plot.model).y, [0, 1, 0])
     for input in (joint, fit)
         plotted = plot_curves(input; opts..., model = input === fit ? nothing : model)
         curve = only(plotted.data)
         @test isapprox(curve.grid.low, edges.low)
         @test isapprox(curve.grid.high, edges.high)
-        @test isapprox(curve.y, [100, 0])
+        @test isapprox(curve.y, [0, 100, 0])
         @test isapprox(curve.covariance, only(direct_plot.data).covariance)
-        @test isapprox(only(plotted.model).y, [3, 0])
+        @test isapprox(only(plotted.model).y, [0, 1, 0])
         shared = only(plot_curves(input; opts..., rebin = 10).data)
         @test isapprox(shared.grid.low, wave[[1, 11, 21]])
         @test isapprox(shared.y, [0, 100, 0])
     end
     alternate = only(plot_curves(joint; opts..., reference = 2).data)
-    @test isapprox(alternate.grid.low, wave[[1, 11]])
-    @test isapprox(alternate.y, [0, 100])
+    @test isapprox(alternate.grid.low, edges.low)
+    @test isapprox(alternate.y, [0, 100, 0])
 
     custom = BinGrid(wave[[1, 9]], wave[[9, 26]])
     matched_custom = match_dataset_grids(a, b; detector_grid = custom,
                                          detector_coordinate = :wavelength)
     joint_custom = combine_datasets(matched_custom; groupings = plans)
-    curve = only(plot_curves(joint_custom; opts...).data)
+    @test isapprox(only(plot_curves(joint_custom; opts...).data).y, [100])
+    curve = only(plot_curves(joint_custom; opts..., rebin = 1).data)
     @test isapprox(curve.grid.low, custom.low)
     @test isapprox(curve.y, [0, 100])
 
-    exclude_line = trues(length(b.spectrum.channels))
+    exclude_line = trues(length(a.spectrum.channels))
     exclude_line[line_row] = false
-    subset = grouping_plan(b, :width, 10; mask = exclude_line)
-    selected = combine_datasets(match; groupings = (plans[1], subset))
-    @test isapprox(only(plot_curves(selected; opts...).data).y, [0, 0])
+    subset = grouping_plan(a, :width, 10; mask = exclude_line)
+    selected = combine_datasets(match; groupings = (subset, plans[2]))
+    @test isapprox(only(plot_curves(selected; opts...).data).y, [0, 0, 0])
 
-    b.data_mask .= false
-    @test isapprox(only(plot_curves(fit; opts...).data).y, [100, 0])
+    a.data_mask .= false
+    @test isapprox(only(plot_curves(fit; opts...).data).y, [0, 100, 0])
     @test isapprox(SF.measure_objective!(cfg, [1.0], 1), only(fit.stats))
 end
 

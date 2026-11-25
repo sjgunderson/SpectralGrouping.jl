@@ -88,9 +88,9 @@ jointrgs = SG.combine_datasets(matchedrgs; mode=:joint, groupings=plansrgs)
 ```
 
 `SG.plot_data(jointrgs; combine=:exposure, xaxis=:wavelength)` projects the
-selected channels directly onto the reference spectrum's grouped edges.
-Use `rebin=5` explicitly to group the full shared detector lattice instead,
-including target bins in intervals masked by the reference.
+selected channels onto the shared detector lattice and groups it by five.
+This includes target bins in intervals masked by the reference. Use
+`rebin=N` to choose a different display width.
 
 For an individual spectrum, `SG.group_width(rgs1spec_scaled, 5)` returns
 a fresh calibrated spectrum with the grouping applied. It can be plotted

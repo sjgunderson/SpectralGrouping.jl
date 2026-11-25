@@ -361,8 +361,7 @@ function _native_plot_inputs(input, model, extension; groupings, pooling, refere
     return (; members, target, source, summed = false)
 end
 
-function _prepared_plot_inputs(data::AbstractGridDataset, model, extension;
-                               unfold, pooling, reference, reference_groups)
+function _prepared_plot_inputs(data::AbstractGridDataset, model, extension; unfold, pooling, reference)
     source = _plot_model_flux(data.model_edges, model, extension)
     flux = isnothing(source) ? nothing : source.values
     summed = data isa SummedDataset
@@ -378,11 +377,6 @@ function _prepared_plot_inputs(data::AbstractGridDataset, model, extension;
     responses = data.members
     if pooling && data isa JointDataset && !isnothing(data.native_members)
         responses = data.native_members
-        ref = isnothing(reference) ? data.reference : reference
-        if reference_groups && (!isnothing(reference) || data.reference_detector_target) &&
-                responses[ref] !== data.members[ref]
-            target = (grid = data.members[ref].grid, coordinate = :energy)
-        end
     end
     members = [_read_plot_member(member, coordinate, flux, "$(data.name) [$i]"; unfold)
                for (i, member) in enumerate(responses)]
@@ -394,10 +388,10 @@ function _prepared_plot_inputs(data::AbstractGridDataset, model, extension;
 end
 
 function _read_plot_inputs(data, model, extension, fit_stat;
-                           groupings, pooling, reference, unfold, read_background, reference_groups = false)
+                           groupings, pooling, reference, unfold, read_background)
     if data isa AbstractGridDataset
         isnothing(groupings) || throw(ArgumentError("prepared datasets already have detector grouping; use rebin for display"))
-        return _prepared_plot_inputs(data, model, extension; unfold, pooling, reference, reference_groups)
+        return _prepared_plot_inputs(data, model, extension; unfold, pooling, reference)
     elseif data isa SF.SpectralData && !isnothing(model) && !isnothing(fit_stat)
         return _native_fit_plot_input(data, model, extension; groupings, pooling, reference, unfold)
     end

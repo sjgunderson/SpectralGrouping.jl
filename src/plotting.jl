@@ -364,10 +364,10 @@ result. Use `kind=:counts` for counts per bin and `kind=:unfold` for
 response-corrected flux. Pass `model` to overlay a source. For individual
 native plots, `groupings` applies detector plans. For pooled plots, `rebin`
 groups consecutive bins of the common detector grid. With `rebin=nothing`,
-a pooled joint dataset or fit result uses the reference's fitted detector
-bins when it was grouped. An explicit detector target takes precedence.
-Pooled curves project the original selected channels onto the display grid.
-Fit results supply parameter values.
+a pooled joint dataset or fit result uses the common width when every member
+was grouped with the same `:width` target, and one bin otherwise. Pooled
+joint plots project the original selected channels onto the shared detector
+grid before rebinning. Fit results supply parameter values.
 """
 function plot_curves(
     input; kind::Symbol = :data, xaxis::Symbol = :energy, normalization::Symbol = :rate_density,
@@ -405,14 +405,14 @@ function plot_curves(
     )
     res > 0 && isnothing(source_model) && throw(ArgumentError("residuals require a source model or a fit result"))
     pooling = combine != :none || data isa SummedDataset
-    reference_groups = isnothing(rebin)
-    rebin = something(rebin, 1)
+    if isnothing(rebin)
+        rebin = pooling && data isa JointDataset ? data.display_rebin : 1
+    end
     statistic = _plot_statistic(residual_stat, fit_stat)
     fit_residuals = pooling && data isa JointDataset && !isnothing(data.native_members) &&
         res > 0 && mod1(res, 3) != 3 && statistic in (:cash, :wstat)
     inputs = _read_plot_inputs(data, source_model, extension, fit_stat; groupings, pooling,
-                               reference, unfold = unfolding, read_background = background != :include,
-                               reference_groups)
+                               reference, unfold = unfolding, read_background = background != :include)
     groups, residual_groups = if pooling
         if inputs.summed && combine == :none
             # The detector overlap matrices on the fitted sum define the physical view.

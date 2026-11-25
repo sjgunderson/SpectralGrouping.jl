@@ -105,16 +105,17 @@ and sensitivity, with counts and sensitivity summed before unfolding.
 A uniform 0.010 Å target gives 0.040 Å full-width groups for `rebin=4`.
 
 Use native `groupings` for individual plots or when preparing a joint fit.
-When the reference has a fit grouping and the plot omits `rebin`, the pooled
-plot uses that reference's exact grouped edges. This follows the grouped
-reference workflow in [fancy_plotting](https://github.com/sjgunderson/fancy_plotting/blob/main/src/fancy_plotting/plotting.py).
-A detector target supplied explicitly to matching takes precedence. The
-joint dataset retains the original selected channels and projects counts,
-scaled background, covariance, and folded model to the plot grid.
+Pooled joint plots use the ISIS matched-grid workflow. When every member has
+the same fixed-width fit target, the plot applies that width to the shared
+detector lattice by default. This retains measurements from other detectors
+across masked reference intervals when the target covers those intervals.
+If the plans differ, the plot defaults to one bin per shared target bin.
+Use `rebin=N` to override the inferred width. For a target supplied with
+final bin edges, set `rebin=1` to use those edges as given.
 
-Use `rebin=N` for the ISIS matched-grid workflow, which groups the shared
-detector lattice and retains measurements from other detectors across a
-masked reference interval. `rebin=1` selects the ungrouped shared target.
+The joint dataset retains the original selected channels and projects
+counts, scaled background, covariance, and folded model onto the shared
+grid for pooled display.
 With a grouped fit, use `combine=:none, rebin=1` for residuals on the fit
 bins. `plot_curves` exposes bin edges, validity, errors, and covariance
 without a graphics backend.
